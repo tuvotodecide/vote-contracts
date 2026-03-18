@@ -63,9 +63,17 @@ forge fmt
 ```
 
 ### Deploy
+Deploy library first
+```shell
+forge create lib/contracts/contracts/lib/VerifierLib.sol:VerifierLib --rpc-url local --private-key <your-private-key> --broadcast
+```
+Copy the deployed contract on foundry.toml
+```
+libraries = ["lib/contracts/contracts/lib/VerifierLib.sol:VerifierLib:<address>"]
+```
 
 ```shell
-forge script script/VoteManager.s.sol:VoteManagerScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+forge script script/VoteManager.s.sol:VoteManagerScript --rpc-url <your_rpc_url> --private-key <your_private_key> --bradcast
 ```
 
 ### Local Node

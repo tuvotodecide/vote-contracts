@@ -36,7 +36,7 @@ contract VoteManager is Initializable, ReentrancyGuardTransient, EmbeddedZKPVeri
     event VoteCreated(string indexed id, string name);
     event Voted(string indexed voteId);
 
-    function initialize() public {
+    function initialize() public initializer {
         super.__EmbeddedZKPVerifier_init(_msgSender(), IState(address(0x0)));
     }
 
@@ -125,6 +125,15 @@ contract VoteManager is Initializable, ReentrancyGuardTransient, EmbeddedZKPVeri
         for (uint i = 0; i < vote.options.length; i++) {
             voteCounts[i] = vote.votes[vote.options[i]];
         }
+    }
+
+    function getVoteInfo(string calldata voteId) external view existingVote(voteId) returns (string memory name, uint256 startDate, uint256 endDate, uint256 resultsDate, string[] memory options) {
+        Vote storage vote = votes[voteId];
+        name = vote.name;
+        startDate = vote.startDate;
+        endDate = vote.endDate;
+        resultsDate = vote.resultsDate;
+        options = vote.options;
     }
 
     function getOwnVoteInfo(string calldata voteId, string calldata nullifier) external view existingVote(voteId) returns (bool hasVoted, string memory optionVoted) {

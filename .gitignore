@@ -12,3 +12,10 @@ docs/
 
 # Dotenv file
 .env
+
+# Extensions
+.wake
+.vscode
+
+# Deploys
+broadcast/

@@ -19,3 +19,6 @@ docs/
 
 # Deploys
 broadcast/
+
+# Config
+foundry.toml

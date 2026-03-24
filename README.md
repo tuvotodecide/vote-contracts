@@ -65,7 +65,7 @@ forge fmt
 ### Deploy
 Deploy library first
 ```shell
-forge create lib/contracts/contracts/lib/VerifierLib.sol:VerifierLib --rpc-url local --private-key <your-private-key> --broadcast
+forge create lib/contracts/contracts/lib/VerifierLib.sol:VerifierLib --rpc-url <your_rpc_url> --private-key <your-private-key> --broadcast
 ```
 Copy the deployed contract on foundry.toml
 ```

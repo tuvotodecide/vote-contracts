@@ -10,10 +10,11 @@ contract SimpleVoteManager is Initializable, ReentrancyGuardTransient, OwnableUp
     struct Vote {
         address proposer;
         string  name;
-        uint256 startDate;
-        uint256 endDate;
-        uint256 resultsDate;
-        uint64  requestId;
+        uint48 startDate;
+        uint48 endDate;
+        uint48 resultsDate;
+        uint48 totalVoters;
+        mapping(string => bool) voters;
         string[] options;
         mapping(string => bool)     existingOptions;
         mapping(string => uint256)  votes;
@@ -71,10 +72,10 @@ contract SimpleVoteManager is Initializable, ReentrancyGuardTransient, OwnableUp
     function createVote(
         string calldata id,
         string calldata name,
-        uint256 startDate,
-        uint256 endDate,
-        uint256 resultsDate,
-        uint64  requestId,
+        uint48 startDate,
+        uint48 endDate,
+        uint48 resultsDate,
+        string[] memory voters,
         string[] memory options
     ) external validVoteDates(startDate, endDate, resultsDate) {
         require(bytes(name).length > 0, "Vote name cannot be empty");
@@ -86,8 +87,11 @@ contract SimpleVoteManager is Initializable, ReentrancyGuardTransient, OwnableUp
         votes[id].startDate = startDate;
         votes[id].endDate = endDate;
         votes[id].resultsDate = resultsDate;
-        votes[id].requestId = requestId;
+        votes[id].totalVoters = uint48(voters.length);
         votes[id].options = options;
+        for (uint i = 0; i < voters.length; i++) {
+            votes[id].voters[voters[i]] = true;
+        }
         for (uint i = 0; i < options.length; i++) {
             votes[id].existingOptions[options[i]] = true;
         }
@@ -96,9 +100,9 @@ contract SimpleVoteManager is Initializable, ReentrancyGuardTransient, OwnableUp
 
     function updateVoteDates(
         string calldata id,
-        uint256 startDate,
-        uint256 endDate,
-        uint256 resultsDate
+        uint48 startDate,
+        uint48 endDate,
+        uint48 resultsDate
     ) external validVoteDates(startDate, endDate, resultsDate) existingVote(id) onlyProposer(id) {
         require(block.timestamp < votes[id].startDate - 24 hours, "Too near to vote start date");
 
@@ -109,6 +113,7 @@ contract SimpleVoteManager is Initializable, ReentrancyGuardTransient, OwnableUp
 
     function castVote(string calldata voteId, string calldata optionId, string calldata nullifier) external nonReentrant existingVote(voteId) {
         Vote storage vote = votes[voteId];
+        require(vote.voters[nullifier], "Not eligible to vote");
         require(block.timestamp >= vote.startDate && block.timestamp <= vote.endDate, "Voting is not active");
         require(vote.existingOptions[optionId], "Invalid option");
         require(bytes(vote.nullifiers[nullifier]).length == 0, "Nullifier already used");
@@ -131,12 +136,13 @@ contract SimpleVoteManager is Initializable, ReentrancyGuardTransient, OwnableUp
         }
     }
 
-    function getVoteInfo(string calldata voteId) external view existingVote(voteId) returns (string memory name, uint256 startDate, uint256 endDate, uint256 resultsDate, string[] memory options) {
+    function getVoteInfo(string calldata voteId) external view existingVote(voteId) returns (string memory name, uint48 startDate, uint48 endDate, uint48 resultsDate, uint48 totalVoters, string[] memory options) {
         Vote storage vote = votes[voteId];
         name = vote.name;
         startDate = vote.startDate;
         endDate = vote.endDate;
         resultsDate = vote.resultsDate;
+        totalVoters = vote.totalVoters;
         options = vote.options;
     }
 

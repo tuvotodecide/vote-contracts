@@ -10,6 +10,7 @@
 [submodule "lib/contracts"]
 	path = lib/contracts
 	url = https://github.com/iden3/contracts
+	branch = master
 [submodule "lib/solidity-bytes-utils"]
 	path = lib/solidity-bytes-utils
 	url = https://github.com/GNSPS/solidity-bytes-utils

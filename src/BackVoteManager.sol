@@ -1,48 +1,54 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import {EmbeddedVerifier} from '@iden3/contracts/verifiers/EmbeddedVerifier.sol';
-import {IState} from '@iden3/contracts/interfaces/IState.sol';
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
-contract VoteManager is ReentrancyGuardTransient, EmbeddedVerifier, UUPSUpgradeable {
+contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgradeable, UUPSUpgradeable {
     struct Vote {
-        uint256 requestId;
-        address proposer;
-        string  name;
+        string name;
         uint48 startDate;
         uint48 endDate;
         uint48 resultsDate;
+        uint48 totalVoters;
         string[] options;
-        mapping(string => bool)     existingOptions;
-        mapping(string => uint256)  votes;
-        mapping(uint256 => string)   nullifiers;
+        mapping(string => bool)    existingOptions;
+        mapping(string => bool)    voters;
+        mapping(string => uint256) votes;
+        mapping(string => string)  nullifiers;
     }
 
-    mapping(uint96 => Vote) private votes;
+    address private authorizedCaller;
+    mapping(string => Vote) private votes;
 
     modifier validVoteDates(uint48 startDate, uint48 endDate, uint48 resultsDate) {
         _validVoteDates(startDate, endDate, resultsDate);
         _;
     }
 
-    modifier existingVote(uint96 id) {
+    modifier existingVote(string calldata id) {
         _existingVote(id);
         _;
     }
 
-    modifier onlyProposer(uint96 id) {
-        _onlyProposer(id);
+    modifier onlyAuthorizedCaller() {
+        _onlyAuthorizedCaller();
         _;
     }
 
-    event VoteCreated(uint96 indexed id, string name);
-    event Voted(uint96 indexed voteId);
+    event VoteCreated(string indexed id, string name);
+    event Voted(string indexed voteId);
 
-    function initialize() public initializer {
-        super.__EmbeddedVerifier_init(_msgSender(), IState(address(0x0)));
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address initialOwner, address _authorizedCaller) public initializer {
+        __Ownable_init(initialOwner);
+        authorizedCaller = _authorizedCaller;
     }
 
     function _authorizeUpgrade(address newImplementation)
@@ -56,34 +62,44 @@ contract VoteManager is ReentrancyGuardTransient, EmbeddedVerifier, UUPSUpgradea
         require(endDate < resultsDate, "End date must be before results date");
     }
 
-    function _existingVote(uint96 id) internal view {
+    function _existingVote(string calldata id) internal view {
         require(bytes(votes[id].name).length > 0, "Vote does not exist");
     }
 
-    function _onlyProposer(uint96 id) internal view {
-        require(votes[id].proposer == msg.sender, "Only proposer can call this function");
+    function _onlyAuthorizedCaller() internal view {
+        require(msg.sender == authorizedCaller, "Not authorized caller");
+    }
+
+    function setAuthorizedCaller(address newCaller) external onlyOwner {
+        authorizedCaller = newCaller;
+    }
+
+    function getAuthorizedCaller() public view onlyOwner returns (address) {
+        return authorizedCaller;
     }
 
     function createVote(
-        uint96 id,
-        uint256 requestId,
+        string calldata id,
         string calldata name,
         uint48 startDate,
         uint48 endDate,
         uint48 resultsDate,
+        string[] memory voters,
         string[] memory options
-    ) external validVoteDates(startDate, endDate, resultsDate) {
+    ) external validVoteDates(startDate, endDate, resultsDate) onlyAuthorizedCaller {
         require(bytes(name).length > 0, "Vote name cannot be empty");
         require(bytes(votes[id].name).length == 0, "Vote already exists");
         require(options.length > 0, "Options cannot be empty");
 
-        votes[id].proposer = msg.sender;
-        votes[id].requestId = requestId;
         votes[id].name = name;
         votes[id].startDate = startDate;
         votes[id].endDate = endDate;
         votes[id].resultsDate = resultsDate;
+        votes[id].totalVoters = uint48(voters.length);
         votes[id].options = options;
+        for (uint i = 0; i < voters.length; i++) {
+            votes[id].voters[voters[i]] = true;
+        }
         for (uint i = 0; i < options.length; i++) {
             votes[id].existingOptions[options[i]] = true;
         }
@@ -91,31 +107,23 @@ contract VoteManager is ReentrancyGuardTransient, EmbeddedVerifier, UUPSUpgradea
     }
 
     function updateVoteDates(
-        uint96 id,
+        string calldata id,
         uint48 startDate,
         uint48 endDate,
         uint48 resultsDate
-    ) external validVoteDates(startDate, endDate, resultsDate) existingVote(id) onlyProposer(id) {
-        require(block.timestamp + 24 hours < uint256(votes[id].startDate), "Too near to vote start date");
+    ) external validVoteDates(startDate, endDate, resultsDate) existingVote(id) onlyAuthorizedCaller {
+        require(block.timestamp < votes[id].startDate - 24 hours, "Too near to vote start date");
 
         votes[id].startDate = startDate;
         votes[id].endDate = endDate;
         votes[id].resultsDate = resultsDate;
     }
 
-    function castVote(uint96 voteId, string calldata optionId) external nonReentrant existingVote(voteId) {
+    function castVote(string calldata voteId, string calldata optionId, string calldata nullifier) external nonReentrant existingVote(voteId) onlyAuthorizedCaller {
         Vote storage vote = votes[voteId];
+        require(vote.voters[nullifier], "Not eligible to vote");
         require(block.timestamp >= vote.startDate && block.timestamp <= vote.endDate, "Voting is not active");
         require(vote.existingOptions[optionId], "Invalid option");
-
-        require(getRequestProofStatus(_msgSender(), vote.requestId).isVerified, "ZK verification failed");
-
-        uint256 eventIdRaw = getResponseFieldValue(vote.requestId, _msgSender(), "eventId");
-        
-        uint96 eventId = SafeCast.toUint96(eventIdRaw);
-        require(eventId == voteId, "Invalid eventId in proof");
-
-        uint256 nullifier = getResponseFieldValue(vote.requestId, _msgSender(), "nullifier");
         require(bytes(vote.nullifiers[nullifier]).length == 0, "Nullifier already used");
 
         vote.votes[optionId]++;
@@ -124,7 +132,7 @@ contract VoteManager is ReentrancyGuardTransient, EmbeddedVerifier, UUPSUpgradea
         emit Voted(voteId);
     }
 
-    function getVoteResults(uint96 voteId) external view existingVote(voteId) returns (string[] memory options, uint256[] memory voteCounts) {
+    function getVoteResults(string calldata voteId) external view existingVote(voteId) returns (string[] memory options, uint256[] memory voteCounts) {
         Vote storage vote = votes[voteId];
         require(block.timestamp > vote.resultsDate, "Results are not available yet");
 
@@ -136,16 +144,17 @@ contract VoteManager is ReentrancyGuardTransient, EmbeddedVerifier, UUPSUpgradea
         }
     }
 
-    function getVoteInfo(uint96 voteId) external view existingVote(voteId) returns (string memory name, uint48 startDate, uint48 endDate, uint48 resultsDate, string[] memory options) {
+    function getVoteInfo(string calldata voteId) external view existingVote(voteId) returns (string memory name, uint48 startDate, uint48 endDate, uint48 resultsDate, uint48 totalVoters, string[] memory options) {
         Vote storage vote = votes[voteId];
         name = vote.name;
         startDate = vote.startDate;
         endDate = vote.endDate;
         resultsDate = vote.resultsDate;
+        totalVoters = vote.totalVoters;
         options = vote.options;
     }
 
-    function getOwnVoteInfo(uint96 voteId, uint256 nullifier) external view existingVote(voteId) returns (bool hasVoted, string memory optionVoted) {
+    function getOwnVoteInfo(string calldata voteId, string calldata nullifier) external view existingVote(voteId) returns (bool hasVoted, string memory optionVoted) {
         Vote storage vote = votes[voteId];
         require(bytes(vote.nullifiers[nullifier]).length > 0, "Not voted yet");
 

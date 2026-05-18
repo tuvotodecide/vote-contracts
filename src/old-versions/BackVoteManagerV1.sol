@@ -22,7 +22,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
 
     address private authorizedCaller;
     mapping(string => Vote) private votes;
-    mapping(string => uint8) private voteStates; // 0 = active, 1 = disabled
 
     modifier validVoteDates(uint48 startDate, uint48 endDate, uint48 resultsDate) {
         _validVoteDates(startDate, endDate, resultsDate);
@@ -31,11 +30,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
 
     modifier existingVote(string calldata id) {
         _existingVote(id);
-        _;
-    }
-
-    modifier activeVote(string calldata id) {
-        _activeVote(id);
         _;
     }
 
@@ -70,10 +64,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
 
     function _existingVote(string calldata id) internal view {
         require(bytes(votes[id].name).length > 0, "Vote does not exist");
-    }
-
-    function _activeVote(string calldata id) internal view {
-        require(voteStates[id] == 0, "Vote is not active");
     }
 
     function _onlyAuthorizedCaller() internal view {
@@ -121,7 +111,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         uint48 startDate,
         uint48 endDate,
         uint48 resultsDate
-    ) external validVoteDates(startDate, endDate, resultsDate) existingVote(id) activeVote(id) onlyAuthorizedCaller {
+    ) external validVoteDates(startDate, endDate, resultsDate) existingVote(id) onlyAuthorizedCaller {
         require(block.timestamp < votes[id].startDate - 24 hours, "Too near to vote start date");
 
         votes[id].startDate = startDate;
@@ -129,23 +119,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         votes[id].resultsDate = resultsDate;
     }
 
-    function addNewVoters(string calldata id, string[] memory newVoters) external existingVote(id) activeVote(id) onlyAuthorizedCaller {
-        Vote storage vote = votes[id];
-        require(block.timestamp < vote.endDate, "Too late to add voters");
-
-        for (uint i = 0; i < newVoters.length; i++) {
-            if (!vote.voters[newVoters[i]]) {
-                vote.voters[newVoters[i]] = true;
-                vote.totalVoters++;
-            }
-        }
-    }
-
-    function disableVote(string calldata id) external activeVote(id) onlyAuthorizedCaller {
-        voteStates[id] = 1;
-    }
-
-    function castVote(string calldata voteId, string calldata optionId, string calldata nullifier) external nonReentrant existingVote(voteId) activeVote(voteId) onlyAuthorizedCaller {
+    function castVote(string calldata voteId, string calldata optionId, string calldata nullifier) external nonReentrant existingVote(voteId) onlyAuthorizedCaller {
         Vote storage vote = votes[voteId];
         require(vote.voters[nullifier], "Not eligible to vote");
         require(block.timestamp >= vote.startDate && block.timestamp <= vote.endDate, "Voting is not active");

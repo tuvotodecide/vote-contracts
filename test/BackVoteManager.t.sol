@@ -201,6 +201,108 @@ contract BackVoteManagerTest is Test {
         manager.updateVoteDates(VOTE_ID, startDate, endDate, resultsDate);
     }
 
+    // ========== addNewVoters ==========
+
+    function test_addNewVoters_success() public {
+        vm.prank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        string[] memory newVoters = new string[](2);
+        newVoters[0] = "444";
+        newVoters[1] = "555";
+
+        vm.prank(authorizedCaller);
+        manager.addNewVoters(VOTE_ID, newVoters);
+
+        (, , , , uint48 totalVoters, ) = manager.getVoteInfo(VOTE_ID);
+        assertEq(totalVoters, 5);
+    }
+
+    function test_addNewVoters_skipsDuplicates() public {
+        vm.prank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        string[] memory newVoters = new string[](3);
+        newVoters[0] = "111";
+        newVoters[1] = "222";
+        newVoters[2] = "444";
+
+        vm.prank(authorizedCaller);
+        manager.addNewVoters(VOTE_ID, newVoters);
+
+        (, , , , uint48 totalVoters, ) = manager.getVoteInfo(VOTE_ID);
+        assertEq(totalVoters, 4);
+    }
+
+    function test_addNewVoters_revert_nonExistentVote() public {
+        string[] memory newVoters = new string[](1);
+        newVoters[0] = "444";
+
+        vm.expectRevert("Vote does not exist");
+        vm.prank(authorizedCaller);
+        manager.addNewVoters("99", newVoters);
+    }
+
+    function test_addNewVoters_revert_tooLateToAdd() public {
+        vm.prank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        vm.warp(endDate);
+
+        string[] memory newVoters = new string[](1);
+        newVoters[0] = "444";
+
+        vm.expectRevert("Too late to add voters");
+        vm.prank(authorizedCaller);
+        manager.addNewVoters(VOTE_ID, newVoters);
+    }
+
+    function test_addNewVoters_revert_notAuthorizedCaller() public {
+        vm.prank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        string[] memory newVoters = new string[](1);
+        newVoters[0] = "444";
+
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not authorized caller");
+        manager.addNewVoters(VOTE_ID, newVoters);
+    }
+
+    // ========== disableVote ==========
+
+    function test_disableVote_success() public {
+        vm.prank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        vm.prank(authorizedCaller);
+        manager.disableVote(VOTE_ID);
+
+        vm.warp(startDate);
+        vm.expectRevert("Vote is not active");
+        vm.prank(authorizedCaller);
+        manager.castVote(VOTE_ID, "optionA", "111");
+    }
+
+    function test_disableVote_revert_notAuthorizedCaller() public {
+        vm.prank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not authorized caller");
+        manager.disableVote(VOTE_ID);
+    }
+
+    function test_disableVote_revert_notActiveVote() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        manager.disableVote(VOTE_ID);
+
+        vm.expectRevert("Vote is not active");
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+    }
+
     // ========== castVote ==========
 
     function test_castVote_success() public {
@@ -307,6 +409,17 @@ contract BackVoteManagerTest is Test {
         manager.castVote(VOTE_ID, "optionA", "111");
     }
 
+    function test_castVote_revert_voteDisabled() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+
+        vm.expectRevert("Vote is not active");
+        vm.prank(authorizedCaller);
+        manager.castVote(VOTE_ID, "optionA", "111");
+    }
+
     // ========== getVoteResults ==========
 
     function test_getVoteResults_revert_beforeResultsDate() public {
@@ -335,11 +448,38 @@ contract BackVoteManagerTest is Test {
         }
     }
 
+    function test_getVoteResults_revert_voteDisabled_beforeResultsDate() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+
+        vm.expectRevert("Results are not available yet");
+        manager.getVoteResults(VOTE_ID);
+    }
+
     // ========== getVoteInfo ==========
 
     function test_getVoteInfo_revert_nonExistentVote() public {
         vm.expectRevert("Vote does not exist");
         manager.getVoteInfo("99");
+    }
+
+    function test_getVoteInfo_success_voteDisabled() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+
+        (string memory name, uint48 sd, uint48 ed, uint48 rd, uint48 totalVoters, string[] memory opts) =
+            manager.getVoteInfo(VOTE_ID);
+
+        assertEq(name, VOTE_NAME);
+        assertEq(sd, startDate);
+        assertEq(ed, endDate);
+        assertEq(rd, resultsDate);
+        assertEq(totalVoters, 3);
+        assertEq(opts.length, 3);
     }
 
     // ========== getOwnVoteInfo ==========
@@ -368,5 +508,47 @@ contract BackVoteManagerTest is Test {
     function test_getOwnVoteInfo_revert_nonExistentVote() public {
         vm.expectRevert("Vote does not exist");
         manager.getOwnVoteInfo("99", "111");
+    }
+
+    function test_getOwnVoteInfo_success_voteDisabled() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.warp(startDate);
+        manager.castVote(VOTE_ID, "optionA", "111");
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+
+        (bool hasVoted, string memory optionVoted) = manager.getOwnVoteInfo(VOTE_ID, "111");
+        assertTrue(hasVoted);
+        assertEq(optionVoted, "optionA");
+    }
+
+    function test_updateVoteDates_revert_voteDisabled() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+
+        uint48 newStart = uint48(block.timestamp + 3 days);
+        uint48 newEnd   = uint48(block.timestamp + 5 days);
+        uint48 newResults = uint48(block.timestamp + 7 days);
+
+        vm.expectRevert("Vote is not active");
+        vm.prank(authorizedCaller);
+        manager.updateVoteDates(VOTE_ID, newStart, newEnd, newResults);
+    }
+
+    function test_addNewVoters_revert_voteDisabled() public {
+        vm.startPrank(authorizedCaller);
+        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        manager.disableVote(VOTE_ID);
+        vm.stopPrank();
+
+        string[] memory newVoters = new string[](1);
+        newVoters[0] = "444";
+
+        vm.expectRevert("Vote is not active");
+        vm.prank(authorizedCaller);
+        manager.addNewVoters(VOTE_ID, newVoters);
     }
 }

@@ -9,6 +9,7 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgradeable, UUPSUpgradeable {
     struct Vote {
         string name;
+        string institutionId;
         uint48 startDate;
         uint48 endDate;
         uint48 resultsDate;
@@ -20,9 +21,16 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         mapping(string => string) nullifiers;
     }
 
+    struct Institution {
+        string id;
+        address admin;
+        mapping(address => bool) authorizedAddresses;
+    }
+
     address private authorizedCaller;
     mapping(string => Vote) private votes;
     mapping(string => uint8) private voteStates; // 0 = active, 1 = disabled
+    mapping(string => Institution) private institutions;
 
     modifier validVoteDates(uint48 startDate, uint48 endDate, uint48 resultsDate) {
         _validVoteDates(startDate, endDate, resultsDate);
@@ -44,8 +52,26 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         _;
     }
 
+    modifier existingInstitution(string calldata id) {
+        _existingInstitution(id);
+        _;
+    }
+
+    modifier onlyInstitutionAdmin(string calldata id) {
+        _onlyInstitutionAdmin(id);
+        _;
+    }
+
+    modifier onlyAuthorizedInInstitution(string memory institutionId) {
+        _onlyAuthorizedInInstitution(institutionId);
+        _;
+    }
+
     event VoteCreated(string indexed id, string name);
     event Voted(string indexed voteId);
+    event InstitutionCreated(string indexed id, address admin);
+    event InstitutionDeleted(string indexed id);
+    event InstitutionAdminChanged(string indexed id, address newAdmin);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -76,6 +102,23 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         require(msg.sender == authorizedCaller, "Not authorized caller");
     }
 
+    function _existingInstitution(string calldata id) internal view {
+        require(institutions[id].admin != address(0), "Institution does not exist");
+    }
+
+    function _onlyInstitutionAdmin(string calldata id) internal view {
+        require(msg.sender == institutions[id].admin, "Not institution admin");
+    }
+
+    function _onlyAuthorizedInInstitution(string memory institutionId) internal view {
+        require(institutions[institutionId].admin != address(0), "Institution does not exist");
+        require(
+            msg.sender == institutions[institutionId].admin
+                || institutions[institutionId].authorizedAddresses[msg.sender],
+            "Not authorized in institution"
+        );
+    }
+
     function setAuthorizedCaller(address newCaller) external onlyOwner {
         authorizedCaller = newCaller;
     }
@@ -84,20 +127,79 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         return authorizedCaller;
     }
 
+    function createInstitution(string calldata id, address admin) external onlyAuthorizedCaller {
+        require(bytes(id).length > 0, "Institution id cannot be empty");
+        require(institutions[id].admin == address(0), "Institution already exists");
+        require(admin != address(0), "Admin cannot be zero address");
+
+        institutions[id].id = id;
+        institutions[id].admin = admin;
+
+        emit InstitutionCreated(id, admin);
+    }
+
+    // Mappings can't be deleted in Solidity, so authorizedAddresses persist if the id is reused later.
+    function deleteInstitution(string calldata id) external existingInstitution(id) onlyAuthorizedCaller {
+        delete institutions[id];
+        emit InstitutionDeleted(id);
+    }
+
+    function addAuthorizedAddress(string calldata id, address addr)
+        external
+        existingInstitution(id)
+        onlyInstitutionAdmin(id)
+    {
+        require(addr != address(0), "Address cannot be zero address");
+        institutions[id].authorizedAddresses[addr] = true;
+    }
+
+    function removeAuthorizedAddress(string calldata id, address addr)
+        external
+        existingInstitution(id)
+        onlyInstitutionAdmin(id)
+    {
+        institutions[id].authorizedAddresses[addr] = false;
+    }
+
+    function changeInstitutionAdmin(string calldata id, address newAdmin)
+        external
+        existingInstitution(id)
+        onlyInstitutionAdmin(id)
+    {
+        require(newAdmin != address(0), "New admin cannot be zero address");
+        institutions[id].admin = newAdmin;
+        emit InstitutionAdminChanged(id, newAdmin);
+    }
+
+    function getInstitutionAdmin(string calldata id) external view existingInstitution(id) returns (address) {
+        return institutions[id].admin;
+    }
+
+    function isAuthorizedAddress(string calldata id, address addr)
+        external
+        view
+        existingInstitution(id)
+        returns (bool)
+    {
+        return institutions[id].authorizedAddresses[addr];
+    }
+
     function createVote(
         string calldata id,
+        string calldata institutionId,
         string calldata name,
         uint48 startDate,
         uint48 endDate,
         uint48 resultsDate,
         string[] memory voters,
         string[] memory options
-    ) external validVoteDates(startDate, endDate, resultsDate) onlyAuthorizedCaller {
+    ) external validVoteDates(startDate, endDate, resultsDate) onlyAuthorizedInInstitution(institutionId) {
         require(bytes(name).length > 0, "Vote name cannot be empty");
         require(bytes(votes[id].name).length == 0, "Vote already exists");
         require(options.length > 0, "Options cannot be empty");
 
         votes[id].name = name;
+        votes[id].institutionId = institutionId;
         votes[id].startDate = startDate;
         votes[id].endDate = endDate;
         votes[id].resultsDate = resultsDate;
@@ -117,7 +219,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         validVoteDates(startDate, endDate, resultsDate)
         existingVote(id)
         activeVote(id)
-        onlyAuthorizedCaller
+        onlyAuthorizedInInstitution(votes[id].institutionId)
     {
         require(block.timestamp < votes[id].startDate - 24 hours, "Too near to vote start date");
 
@@ -143,7 +245,11 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         }
     }
 
-    function disableVote(string calldata id) external activeVote(id) onlyAuthorizedCaller {
+    function disableVote(string calldata id)
+        external
+        activeVote(id)
+        onlyAuthorizedInInstitution(votes[id].institutionId)
+    {
         voteStates[id] = 1;
     }
 
@@ -203,6 +309,10 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         resultsDate = vote.resultsDate;
         totalVoters = vote.totalVoters;
         options = vote.options;
+    }
+
+    function getVoteInstitutionId(string calldata voteId) external view existingVote(voteId) returns (string memory) {
+        return votes[voteId].institutionId;
     }
 
     function getOwnVoteInfo(string calldata voteId, string calldata nullifier)

@@ -15,6 +15,11 @@ contract BackVoteManagerTest is Test {
     string constant VOTE_ID = "vote-1";
     string constant VOTE_NAME = "Test Vote";
 
+    string constant INSTITUTION_ID = "institution-1";
+    string constant VOTE_INSTITUTION_ID = "vote-institution-1";
+    address public institutionAdmin;
+    address public otherAddress;
+
     // Timestamps used across tests
     uint48 startDate;
     uint48 endDate;
@@ -28,6 +33,8 @@ contract BackVoteManagerTest is Test {
         nonOwner = address(0xBEEF);
         authorizedCaller = address(0xCA11);
         unauthorizedCaller = address(0xD00D);
+        institutionAdmin = address(0xAD41);
+        otherAddress = address(0x0AAA);
 
         // Deploy implementation + proxy
         BackVoteManager impl = new BackVoteManager();
@@ -51,6 +58,10 @@ contract BackVoteManagerTest is Test {
         options[0] = "optionA";
         options[1] = "optionB";
         options[2] = "optionC";
+
+        // Institution used to authorize vote creation/management in the tests below
+        vm.prank(authorizedCaller);
+        manager.createInstitution(VOTE_INSTITUTION_ID, institutionAdmin);
     }
 
     // ========== Initialization ==========
@@ -79,14 +90,201 @@ contract BackVoteManagerTest is Test {
         manager.setAuthorizedCaller(unauthorizedCaller);
     }
 
+    // ========== createInstitution ==========
+
+    function test_createInstitution_success() public {
+        vm.expectEmit(true, false, false, true);
+        emit BackVoteManager.InstitutionCreated(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        assertEq(manager.getInstitutionAdmin(INSTITUTION_ID), institutionAdmin);
+    }
+
+    function test_createInstitution_revert_emptyId() public {
+        vm.expectRevert("Institution id cannot be empty");
+        vm.prank(authorizedCaller);
+        manager.createInstitution("", institutionAdmin);
+    }
+
+    function test_createInstitution_revert_duplicateId() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.expectRevert("Institution already exists");
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, otherAddress);
+    }
+
+    function test_createInstitution_revert_zeroAddressAdmin() public {
+        vm.expectRevert("Admin cannot be zero address");
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, address(0));
+    }
+
+    function test_createInstitution_revert_notAuthorizedCaller() public {
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not authorized caller");
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+    }
+
+    // ========== deleteInstitution ==========
+
+    function test_deleteInstitution_success() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.expectEmit(true, false, false, true);
+        emit BackVoteManager.InstitutionDeleted(INSTITUTION_ID);
+
+        vm.prank(authorizedCaller);
+        manager.deleteInstitution(INSTITUTION_ID);
+
+        vm.expectRevert("Institution does not exist");
+        manager.getInstitutionAdmin(INSTITUTION_ID);
+    }
+
+    function test_deleteInstitution_revert_nonExistentInstitution() public {
+        vm.expectRevert("Institution does not exist");
+        vm.prank(authorizedCaller);
+        manager.deleteInstitution(INSTITUTION_ID);
+    }
+
+    function test_deleteInstitution_revert_notAuthorizedCaller() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not authorized caller");
+        manager.deleteInstitution(INSTITUTION_ID);
+    }
+
+    // ========== addAuthorizedAddress ==========
+
+    function test_addAuthorizedAddress_success() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(institutionAdmin);
+        manager.addAuthorizedAddress(INSTITUTION_ID, otherAddress);
+
+        assertTrue(manager.isAuthorizedAddress(INSTITUTION_ID, otherAddress));
+    }
+
+    function test_addAuthorizedAddress_revert_zeroAddress() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(institutionAdmin);
+        vm.expectRevert("Address cannot be zero address");
+        manager.addAuthorizedAddress(INSTITUTION_ID, address(0));
+    }
+
+    function test_addAuthorizedAddress_revert_nonExistentInstitution() public {
+        vm.expectRevert("Institution does not exist");
+        vm.prank(institutionAdmin);
+        manager.addAuthorizedAddress(INSTITUTION_ID, otherAddress);
+    }
+
+    function test_addAuthorizedAddress_revert_notAdmin() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not institution admin");
+        manager.addAuthorizedAddress(INSTITUTION_ID, otherAddress);
+    }
+
+    // ========== removeAuthorizedAddress ==========
+
+    function test_removeAuthorizedAddress_success() public {
+        vm.startPrank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+        vm.stopPrank();
+
+        vm.startPrank(institutionAdmin);
+        manager.addAuthorizedAddress(INSTITUTION_ID, otherAddress);
+        manager.removeAuthorizedAddress(INSTITUTION_ID, otherAddress);
+        vm.stopPrank();
+
+        assertFalse(manager.isAuthorizedAddress(INSTITUTION_ID, otherAddress));
+    }
+
+    function test_removeAuthorizedAddress_revert_nonExistentInstitution() public {
+        vm.expectRevert("Institution does not exist");
+        vm.prank(institutionAdmin);
+        manager.removeAuthorizedAddress(INSTITUTION_ID, otherAddress);
+    }
+
+    function test_removeAuthorizedAddress_revert_notAdmin() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not institution admin");
+        manager.removeAuthorizedAddress(INSTITUTION_ID, otherAddress);
+    }
+
+    // ========== changeInstitutionAdmin ==========
+
+    function test_changeInstitutionAdmin_success() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.expectEmit(true, false, false, true);
+        emit BackVoteManager.InstitutionAdminChanged(INSTITUTION_ID, otherAddress);
+
+        vm.prank(institutionAdmin);
+        manager.changeInstitutionAdmin(INSTITUTION_ID, otherAddress);
+
+        assertEq(manager.getInstitutionAdmin(INSTITUTION_ID), otherAddress);
+    }
+
+    function test_changeInstitutionAdmin_revert_zeroAddress() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(institutionAdmin);
+        vm.expectRevert("New admin cannot be zero address");
+        manager.changeInstitutionAdmin(INSTITUTION_ID, address(0));
+    }
+
+    function test_changeInstitutionAdmin_revert_nonExistentInstitution() public {
+        vm.expectRevert("Institution does not exist");
+        vm.prank(institutionAdmin);
+        manager.changeInstitutionAdmin(INSTITUTION_ID, otherAddress);
+    }
+
+    function test_changeInstitutionAdmin_revert_notAdmin() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(unauthorizedCaller);
+        vm.expectRevert("Not institution admin");
+        manager.changeInstitutionAdmin(INSTITUTION_ID, otherAddress);
+    }
+
+    function test_changeInstitutionAdmin_revert_oldAdminLosesAccess() public {
+        vm.prank(authorizedCaller);
+        manager.createInstitution(INSTITUTION_ID, institutionAdmin);
+
+        vm.prank(institutionAdmin);
+        manager.changeInstitutionAdmin(INSTITUTION_ID, otherAddress);
+
+        vm.prank(institutionAdmin);
+        vm.expectRevert("Not institution admin");
+        manager.changeInstitutionAdmin(INSTITUTION_ID, institutionAdmin);
+    }
+
     // ========== createVote ==========
 
     function test_createVote_success() public {
         vm.expectEmit(true, false, false, true);
         emit BackVoteManager.VoteCreated(VOTE_ID, VOTE_NAME);
 
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         (string memory name, uint48 sd, uint48 ed, uint48 rd, uint48 totalVoters, string[] memory opts) =
             manager.getVoteInfo(VOTE_ID);
@@ -100,59 +298,76 @@ contract BackVoteManagerTest is Test {
         assertEq(opts[0], "optionA");
         assertEq(opts[1], "optionB");
         assertEq(opts[2], "optionC");
+        assertEq(manager.getVoteInstitutionId(VOTE_ID), VOTE_INSTITUTION_ID);
+    }
+
+    function test_createVote_success_authorizedAddress() public {
+        vm.prank(institutionAdmin);
+        manager.addAuthorizedAddress(VOTE_INSTITUTION_ID, otherAddress);
+
+        vm.prank(otherAddress);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+
+        assertEq(manager.getVoteInstitutionId(VOTE_ID), VOTE_INSTITUTION_ID);
     }
 
     function test_createVote_revert_emptyName() public {
         vm.expectRevert("Vote name cannot be empty");
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, "", startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, "", startDate, endDate, resultsDate, voters, options);
     }
 
     function test_createVote_revert_duplicateId() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         vm.expectRevert("Vote already exists");
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, "Another", startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, "Another", startDate, endDate, resultsDate, voters, options);
     }
 
     function test_createVote_revert_emptyOptions() public {
         string[] memory emptyOpts = new string[](0);
         vm.expectRevert("Options cannot be empty");
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, emptyOpts);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, emptyOpts);
     }
 
     function test_createVote_revert_invalidDates_startAfterEnd() public {
         vm.expectRevert("Start date must be before end date");
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, endDate, startDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, endDate, startDate, resultsDate, voters, options);
     }
 
     function test_createVote_revert_invalidDates_endAfterResults() public {
         vm.expectRevert("End date must be before results date");
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, resultsDate, endDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, resultsDate, endDate, voters, options);
     }
 
-    function test_createVote_revert_notAuthorizedCaller() public {
+    function test_createVote_revert_notAuthorizedInInstitution() public {
         vm.prank(unauthorizedCaller);
-        vm.expectRevert("Not authorized caller");
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.expectRevert("Not authorized in institution");
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+    }
+
+    function test_createVote_revert_institutionDoesNotExist() public {
+        vm.expectRevert("Institution does not exist");
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, "no-such-institution", VOTE_NAME, startDate, endDate, resultsDate, voters, options);
     }
 
     // ========== updateVoteDates ==========
 
     function test_updateVoteDates_success() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         uint48 newStart = uint48(block.timestamp + 3 days);
         uint48 newEnd = uint48(block.timestamp + 5 days);
         uint48 newResults = uint48(block.timestamp + 7 days);
 
-        vm.prank(authorizedCaller);
+        vm.prank(institutionAdmin);
         manager.updateVoteDates(VOTE_ID, newStart, newEnd, newResults);
 
         (, uint48 sd, uint48 ed, uint48 rd,,) = manager.getVoteInfo(VOTE_ID);
@@ -163,13 +378,13 @@ contract BackVoteManagerTest is Test {
 
     function test_updateVoteDates_revert_nonExistentVote() public {
         vm.expectRevert("Vote does not exist");
-        vm.prank(authorizedCaller);
+        vm.prank(institutionAdmin);
         manager.updateVoteDates("99", startDate, endDate, resultsDate);
     }
 
     function test_updateVoteDates_revert_tooNearStartDate() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         // Warp to 23 hours before start (less than 24h buffer)
         vm.warp(startDate - 23 hours);
@@ -179,33 +394,33 @@ contract BackVoteManagerTest is Test {
         uint48 newResults = uint48(block.timestamp + 7 days);
 
         vm.expectRevert("Too near to vote start date");
-        vm.prank(authorizedCaller);
+        vm.prank(institutionAdmin);
         manager.updateVoteDates(VOTE_ID, newStart, newEnd, newResults);
     }
 
     function test_updateVoteDates_revert_invalidDates() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         vm.expectRevert("Start date must be before end date");
-        vm.prank(authorizedCaller);
+        vm.prank(institutionAdmin);
         manager.updateVoteDates(VOTE_ID, endDate, startDate, resultsDate);
     }
 
-    function test_updateVoteDates_revert_notAuthorizedCaller() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+    function test_updateVoteDates_revert_notAuthorizedInInstitution() public {
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         vm.prank(unauthorizedCaller);
-        vm.expectRevert("Not authorized caller");
+        vm.expectRevert("Not authorized in institution");
         manager.updateVoteDates(VOTE_ID, startDate, endDate, resultsDate);
     }
 
     // ========== addNewVoters ==========
 
     function test_addNewVoters_success() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         string[] memory newVoters = new string[](2);
         newVoters[0] = "444";
@@ -219,8 +434,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_addNewVoters_skipsDuplicates() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         string[] memory newVoters = new string[](3);
         newVoters[0] = "111";
@@ -244,8 +459,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_addNewVoters_revert_tooLateToAdd() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         vm.warp(endDate);
 
@@ -258,8 +473,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_addNewVoters_revert_notAuthorizedCaller() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         string[] memory newVoters = new string[](1);
         newVoters[0] = "444";
@@ -272,10 +487,10 @@ contract BackVoteManagerTest is Test {
     // ========== disableVote ==========
 
     function test_disableVote_success() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
-        vm.prank(authorizedCaller);
+        vm.prank(institutionAdmin);
         manager.disableVote(VOTE_ID);
 
         vm.warp(startDate);
@@ -284,18 +499,18 @@ contract BackVoteManagerTest is Test {
         manager.castVote(VOTE_ID, "optionA", "111");
     }
 
-    function test_disableVote_revert_notAuthorizedCaller() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+    function test_disableVote_revert_notAuthorizedInInstitution() public {
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         vm.prank(unauthorizedCaller);
-        vm.expectRevert("Not authorized caller");
+        vm.expectRevert("Not authorized in institution");
         manager.disableVote(VOTE_ID);
     }
 
     function test_disableVote_revert_notActiveVote() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.startPrank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         manager.disableVote(VOTE_ID);
 
         vm.expectRevert("Vote is not active");
@@ -306,8 +521,8 @@ contract BackVoteManagerTest is Test {
     // ========== castVote ==========
 
     function test_castVote_success() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         // Warp into voting period
         vm.warp(startDate);
@@ -320,8 +535,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_multipleVoters() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
 
         vm.startPrank(authorizedCaller);
@@ -347,8 +562,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_notEligible() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
 
         vm.expectRevert("Not eligible to vote");
@@ -357,8 +572,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_votingNotActive_tooEarly() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         // Don't warp — still before startDate
         vm.expectRevert("Voting is not active");
@@ -367,8 +582,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_votingNotActive_tooLate() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(endDate + 1);
 
         vm.expectRevert("Voting is not active");
@@ -377,8 +592,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_invalidOption() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
 
         vm.expectRevert("Invalid option");
@@ -387,8 +602,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_nullifierAlreadyUsed() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
 
         vm.prank(authorizedCaller);
@@ -400,8 +615,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_notAuthorizedCaller() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
 
         vm.prank(unauthorizedCaller);
@@ -410,8 +625,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_voteDisabled() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.startPrank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 
@@ -423,8 +638,8 @@ contract BackVoteManagerTest is Test {
     // ========== getVoteResults ==========
 
     function test_getVoteResults_revert_beforeResultsDate() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(resultsDate); // exactly at resultsDate, not after
 
         vm.expectRevert("Results are not available yet");
@@ -437,8 +652,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_getVoteResults_noVotesCast() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(resultsDate + 1);
 
         (string[] memory opts, uint256[] memory counts) = manager.getVoteResults(VOTE_ID);
@@ -449,8 +664,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_getVoteResults_revert_voteDisabled_beforeResultsDate() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.startPrank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 
@@ -466,8 +681,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_getVoteInfo_success_voteDisabled() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.startPrank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 
@@ -485,8 +700,8 @@ contract BackVoteManagerTest is Test {
     // ========== getOwnVoteInfo ==========
 
     function test_getOwnVoteInfo_success() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
 
         vm.prank(authorizedCaller);
@@ -498,8 +713,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_getOwnVoteInfo_revert_notVotedYet() public {
-        vm.prank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         vm.expectRevert("Not voted yet");
         manager.getOwnVoteInfo(VOTE_ID, "111");
@@ -511,12 +726,15 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_getOwnVoteInfo_success_voteDisabled() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.prank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         vm.warp(startDate);
+
+        vm.prank(authorizedCaller);
         manager.castVote(VOTE_ID, "optionA", "111");
+
+        vm.prank(institutionAdmin);
         manager.disableVote(VOTE_ID);
-        vm.stopPrank();
 
         (bool hasVoted, string memory optionVoted) = manager.getOwnVoteInfo(VOTE_ID, "111");
         assertTrue(hasVoted);
@@ -524,8 +742,8 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_updateVoteDates_revert_voteDisabled() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.startPrank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 
@@ -534,13 +752,13 @@ contract BackVoteManagerTest is Test {
         uint48 newResults = uint48(block.timestamp + 7 days);
 
         vm.expectRevert("Vote is not active");
-        vm.prank(authorizedCaller);
+        vm.prank(institutionAdmin);
         manager.updateVoteDates(VOTE_ID, newStart, newEnd, newResults);
     }
 
     function test_addNewVoters_revert_voteDisabled() public {
-        vm.startPrank(authorizedCaller);
-        manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
+        vm.startPrank(institutionAdmin);
+        manager.createVote(VOTE_ID, VOTE_INSTITUTION_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 

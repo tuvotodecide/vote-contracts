@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IVestingProvider} from "./IVestingProvider.sol";
 
 /// @dev Minimal interface that adds burn() to the standard ERC-20 surface.
 interface IBurnableERC20 is IERC20 {
@@ -27,24 +28,26 @@ interface IBurnableERC20 is IERC20 {
  *  2. ELECTION
  *     Each valid vote emitted triggers consumeVote(), called by an
  *     authorised operator (platform backend / relayer).
- *     One credit is deducted and the backing TVD is distributed:
+ *     One credit is deducted and the backing TVD is moved into a
+ *     per-institution pending balance.  No tokens leave the contract yet.
  *
  *       TVD per vote = lockedTVD[institution] / creditBalance[institution]
  *
- *       ┌──────────┬───────────────────────────────────────────────────────┐
- *       │ voterBps │ → voter wallet (participation incentive)              │
- *       │ burnBps  │ → burned permanently (deflationary supply shock)      │
- *       └──────────┴───────────────────────────────────────────────────────┘
- *       burnBps = 10,000 − voterBps
+ *  3. LIQUIDATION
+ *     After an election ends the operator calls liquidate(institution).
+ *     The pending TVD is settled:
  *
- *  3. ROLLOVER
- *     Unused credits remain on the institution's account forever.
- *     They can be used in future elections (no expiry).
+ *       burnBps / 10,000      → burned permanently (deflationary)
+ *       remainder             → platformWallet
+ *
+ *     Any TVD backing unused credits is refunded to the institution.
+ *
+ *  4. ROLLOVER
+ *     Credits not liquidated remain on the institution's account and
+ *     can be used in future elections (no expiry).
  *
  * ── Security notes ───────────────────────────────────────────────────
  *  • ReentrancyGuard on all state-changing functions with external calls.
- *  • voterBps must be < 10,000 so that burnBps is always > 0
- *    (enforces permanent deflation).
  *  • Integer-division dust (< 1 wei per credit) accumulates in the
  *    contract and is recoverable by the owner via recoverDust().
  *  • tvdPerCredit changes only affect future top-ups; existing locked
@@ -60,20 +63,33 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     /// @notice TVDToken contract.
     IBurnableERC20 public immutable token;
 
+    /// @notice Wallet that receives TVD at liquidation.
+    address public immutable platformWallet;
+
     /// @notice TVD (in wei) locked per electoral credit at top-up time.
     ///         Adjustable by owner; only affects future purchases.
     uint256 public tvdPerCredit;
 
-    /// @notice Voter incentive share in basis points (out of 10,000 = 100%).
-    ///         burnBps = 10,000 − voterBps  (always > 0 by invariant).
-    uint16 public voterBps; // e.g. 4000 = 40 %
+    /// @notice Burn share applied at liquidation, in basis points (default 1000 = 10%).
+    ///         Must be < 10,000; remainder goes to platformWallet.
+    uint16 public burnBps;
 
-    /// @notice Electoral credit balance per institution.
-    mapping(address => uint256) public creditBalance;
+    /// @notice Ordered list of vesting providers queried during topUp.
+    ///         The first provider with sufficient balance for the caller is used.
+    IVestingProvider[] public vestingProviders;
 
-    /// @notice TVD locked in this contract per institution.
-    ///         Maintained to ensure exact distribution regardless of rate changes.
-    mapping(address => uint256) public lockedTVD;
+    /// @notice Per-institution state.
+    struct Institution {
+        uint256 creditBalance;
+        uint256 lockedTVD;
+        uint256 pendingTVD;
+        /// @dev Address of the vesting provider that funded the current locked balance,
+        ///      or address(0) if tokens came from the institution's own wallet.
+        address vestingSource;
+    }
+
+    /// @notice State for each institution.
+    mapping(address => Institution) private institutions;
 
     /// @notice Addresses authorised to call consumeVote (platform operators / relayers).
     mapping(address => bool) public authorizedOperators;
@@ -82,21 +98,15 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     // Events
     // ──────────────────────────────────────────────────────────────────
 
-    event TopUp(
-        address indexed institution,
-        uint256 creditsPurchased,
-        uint256 tvdLocked
-    );
-    event VoteConsumed(
-        address indexed institution,
-        address indexed voter,
-        uint256 tvdToVoter,
-        uint256 tvdBurned
-    );
+    event TopUp(address indexed institution, uint256 creditsPurchased, uint256 tvdLocked);
+    event VoteConsumed(address indexed institution, uint256 tvdAccrued);
+    event Liquidated(address indexed institution, uint256 tvdToPlatform, uint256 tvdBurned, uint256 tvdRefunded);
     event OperatorUpdated(address indexed operator, bool authorized);
     event TvdPerCreditUpdated(uint256 oldRate, uint256 newRate);
-    event VoterBpsUpdated(uint16 oldVoterBps, uint16 newVoterBps);
+    event BurnBpsUpdated(uint16 oldBurnBps, uint16 newBurnBps);
     event DustRecovered(uint256 amount);
+    event VestingProviderAdded(address indexed provider);
+    event VestingProviderRemoved(address indexed provider);
 
     // ──────────────────────────────────────────────────────────────────
     // Modifiers
@@ -104,8 +114,7 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
 
     modifier onlyOperator() {
         require(
-            authorizedOperators[msg.sender] || msg.sender == owner(),
-            "TVDCredits: caller is not an authorized operator"
+            authorizedOperators[msg.sender] || msg.sender == owner(), "TVDCredits: caller is not an authorized operator"
         );
         _;
     }
@@ -115,26 +124,20 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────────────
 
     /**
-     * @param _token        TVDToken address.
-     * @param _admin        Owner / multisig admin.
-     * @param _tvdPerCredit Initial TVD (wei) required per credit, e.g. 1e18 = 1 TVD.
-     * @param _voterBps     Voter incentive share in basis points (e.g. 4000 = 40 %).
-     *
-     * @dev burnBps = 10,000 − _voterBps and must be > 0.
+     * @param _token          TVDToken address.
+     * @param _admin          Owner / multisig admin.
+     * @param _tvdPerCredit   Initial TVD (wei) required per credit, e.g. 1e18 = 1 TVD.
+     * @param _platformWallet Wallet that receives TVD for every consumed vote.
      */
-    constructor(
-        address _token,
-        address _admin,
-        uint256 _tvdPerCredit,
-        uint16  _voterBps
-    ) Ownable(_admin) {
-        require(_token        != address(0), "TVDCredits: invalid token");
-        require(_tvdPerCredit > 0,           "TVDCredits: rate must be > 0");
-        require(_voterBps < 10_000,          "TVDCredits: voterBps must be < 10000");
+    constructor(address _token, address _admin, uint256 _tvdPerCredit, address _platformWallet) Ownable(_admin) {
+        require(_token != address(0), "TVDCredits: invalid token");
+        require(_tvdPerCredit > 0, "TVDCredits: rate must be > 0");
+        require(_platformWallet != address(0), "TVDCredits: invalid platform wallet");
 
-        token        = IBurnableERC20(_token);
+        token = IBurnableERC20(_token);
         tvdPerCredit = _tvdPerCredit;
-        voterBps     = _voterBps;
+        platformWallet = _platformWallet;
+        burnBps = 1_000; // 10% default
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -154,15 +157,31 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
 
         uint256 tvdRequired = creditsToBuy * tvdPerCredit;
         // Overflow guard (redundant in Solidity ≥0.8 but explicit for clarity)
-        require(
-            tvdRequired / creditsToBuy == tvdPerCredit,
-            "TVDCredits: arithmetic overflow"
-        );
+        require(tvdRequired / creditsToBuy == tvdPerCredit, "TVDCredits: arithmetic overflow");
 
-        token.safeTransferFrom(msg.sender, address(this), tvdRequired);
+        Institution storage inst = institutions[msg.sender];
 
-        creditBalance[msg.sender] += creditsToBuy;
-        lockedTVD[msg.sender]     += tvdRequired;
+        // Scan providers in order; use the first with sufficient balance.
+        // Never draw from both a provider and the institution wallet.
+        address selectedProvider = address(0);
+        uint256 providerCount = vestingProviders.length;
+        for (uint256 i = 0; i < providerCount; i++) {
+            if (vestingProviders[i].assignedBalance(msg.sender) >= tvdRequired) {
+                selectedProvider = address(vestingProviders[i]);
+                break;
+            }
+        }
+
+        if (selectedProvider != address(0)) {
+            IVestingProvider(selectedProvider).withdrawFor(msg.sender, tvdRequired);
+            inst.vestingSource = selectedProvider;
+        } else {
+            token.safeTransferFrom(msg.sender, address(this), tvdRequired);
+            inst.vestingSource = address(0);
+        }
+
+        inst.creditBalance += creditsToBuy;
+        inst.lockedTVD += tvdRequired;
 
         emit TopUp(msg.sender, creditsToBuy, tvdRequired);
     }
@@ -172,47 +191,80 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────────────
 
     /**
-     * @notice Consume one electoral credit for a validated vote.
+     * @notice Record one validated vote for an institution.
      *         Called by an authorised operator (platform relayer / backend).
      *
-     * The TVD backing this credit is distributed as:
-     *   • voterBps / 10,000  → voter wallet (participation reward)
-     *   • remainder          → burned (permanent deflation)
+     * Deducts one credit and moves the backing TVD into `pendingTVD`.
+     * No tokens leave the contract here; settlement happens in liquidate().
      *
      * @param institution Address of the institution running the election.
-     * @param voter       Wallet address of the citizen who cast the valid vote.
      */
-    function consumeVote(address institution, address voter)
-        external
-        nonReentrant
-        onlyOperator
-    {
+    function consumeVote(address institution) external nonReentrant onlyOperator {
         require(institution != address(0), "TVDCredits: invalid institution");
-        require(voter       != address(0), "TVDCredits: invalid voter");
-        require(creditBalance[institution] > 0, "TVDCredits: institution has no credits");
 
-        uint256 credits = creditBalance[institution];
-        uint256 locked  = lockedTVD[institution];
+        Institution storage inst = institutions[institution];
+        require(inst.creditBalance > 0, "TVDCredits: institution has no credits");
 
-        // TVD to distribute for this single vote (weighted-average rate).
-        // Any rounding dust (< 1 wei) stays in lockedTVD and is handled
-        // when the last credit is consumed or via recoverDust().
-        uint256 tvdForVote = locked / credits;
+        // TVD earmarked for this vote (weighted-average rate).
+        // Any rounding dust (< 1 wei) stays in lockedTVD until liquidation.
+        uint256 tvdForVote = inst.lockedTVD / inst.creditBalance;
 
-        creditBalance[institution] -= 1;
-        lockedTVD[institution]     -= tvdForVote;
+        inst.creditBalance -= 1;
+        inst.lockedTVD -= tvdForVote;
+        inst.pendingTVD += tvdForVote;
 
-        uint256 toVoter = (tvdForVote * voterBps) / 10_000;
-        uint256 toBurn  = tvdForVote - toVoter;
+        emit VoteConsumed(institution, tvdForVote);
+    }
 
-        if (toVoter > 0) {
-            token.safeTransfer(voter, toVoter);
+    /**
+     * @notice Settle a completed election for the given institution.
+     *
+     * Distributes `pendingTVD[institution]` (accrued from consumed votes):
+     *   • burnBps / 10,000  → burned permanently
+     *   • remainder         → platformWallet
+     *
+     * Then refunds any TVD backing unused credits back to the institution
+     * and resets all institution state to zero.
+     *
+     * @param institution Address of the institution to liquidate.
+     */
+    function liquidate(address institution) external nonReentrant onlyOperator {
+        require(institution != address(0), "TVDCredits: invalid institution");
+
+        Institution storage inst = institutions[institution];
+
+        uint256 pending = inst.pendingTVD;
+        uint256 refund = inst.lockedTVD;
+        address vestingSource = inst.vestingSource;
+
+        require(pending > 0 || refund > 0, "TVDCredits: nothing to liquidate");
+
+        // Reset all institution state before external calls (CEI pattern).
+        inst.pendingTVD = 0;
+        inst.lockedTVD = 0;
+        inst.creditBalance = 0;
+        inst.vestingSource = address(0);
+
+        // Distribute consumed TVD.
+        uint256 toBurn = (pending * burnBps) / 10_000;
+        uint256 toPlatform = pending - toBurn;
+
+        if (toPlatform > 0) token.safeTransfer(platformWallet, toPlatform);
+        if (toBurn > 0) token.burn(toBurn);
+
+        // Refund unused credit TVD.
+        if (refund > 0) {
+            if (vestingSource != address(0)) {
+                // Tokens originated from a vesting provider — return them there.
+                // Token transfer precedes creditRefund() to satisfy CEI.
+                token.safeTransfer(vestingSource, refund);
+                IVestingProvider(vestingSource).creditRefund(institution, refund);
+            } else {
+                token.safeTransfer(institution, refund);
+            }
         }
-        if (toBurn > 0) {
-            token.burn(toBurn);
-        }
 
-        emit VoteConsumed(institution, voter, toVoter, toBurn);
+        emit Liquidated(institution, toPlatform, toBurn, refund);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -231,6 +283,16 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Update the burn share applied at liquidation.
+     * @param _burnBps Basis points to burn (e.g. 1000 = 10%). Must be < 10,000.
+     */
+    function setBurnBps(uint16 _burnBps) external onlyOwner {
+        require(_burnBps < 10_000, "TVDCredits: burnBps must be < 10000");
+        emit BurnBpsUpdated(burnBps, _burnBps);
+        burnBps = _burnBps;
+    }
+
+    /**
      * @notice Update the TVD-per-credit exchange rate.
      *         Only affects future topUp() calls; existing locked TVD is unaffected.
      *
@@ -243,15 +305,28 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Update the voter incentive share.
-     *
-     * @param _voterBps Basis points for voter reward (e.g. 4000 = 40 %).
-     *                  Must be < 10,000 to leave room for burn.
+     * @notice Add an IVestingProvider to the list queried during topUp.
+     * @param provider Address of the IVestingProvider-compatible contract.
      */
-    function setVoterBps(uint16 _voterBps) external onlyOwner {
-        require(_voterBps < 10_000, "TVDCredits: voterBps must be < 10000");
-        emit VoterBpsUpdated(voterBps, _voterBps);
-        voterBps = _voterBps;
+    function addVestingProvider(address provider) external onlyOwner {
+        require(provider != address(0), "TVDCredits: invalid provider");
+        vestingProviders.push(IVestingProvider(provider));
+        emit VestingProviderAdded(provider);
+    }
+
+    /**
+     * @notice Remove a vesting provider by array index (swap-and-pop).
+     * @dev    Do NOT remove a provider while any institution has a vestingSource
+     *         pointing to it (i.e., there are pending liquidations referencing it).
+     * @param index Position in the vestingProviders array.
+     */
+    function removeVestingProvider(uint256 index) external onlyOwner {
+        uint256 len = vestingProviders.length;
+        require(index < len, "TVDCredits: index out of bounds");
+        address removed = address(vestingProviders[index]);
+        vestingProviders[index] = vestingProviders[len - 1];
+        vestingProviders.pop();
+        emit VestingProviderRemoved(removed);
     }
 
     /**
@@ -264,10 +339,10 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
      */
     function recoverDust() external onlyOwner nonReentrant {
         uint256 balance = token.balanceOf(address(this));
-        uint256 dust    = balance; // all remaining TVD not attributed to institutions
+        uint256 dust = balance; // all remaining TVD not attributed to institutions
 
         // Subtract all attributed locked TVD — note: this is an O(n) approximation.
-        // The contract relies on the invariant: balance >= sum(lockedTVD).
+        // The contract relies on the invariant: balance >= sum(institutions[x].lockedTVD).
         // recoverDust() should only be called when all credits are exhausted
         // or as a maintenance operation confirmed off-chain.
         require(dust > 0, "TVDCredits: no dust to recover");
@@ -279,21 +354,22 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
     // Views
     // ──────────────────────────────────────────────────────────────────
 
-    /// @notice Current burn share in basis points.
-    function burnBps() external view returns (uint16) {
-        return uint16(10_000 - uint256(voterBps));
-    }
-
     /**
-     * @notice Effective TVD (wei) that will be distributed per vote for a given
-     *         institution, based on their current locked balance and credit count.
+     * @notice get institution state
      *
      * @param institution Institution address.
-     * @return tvd TVD per vote, or 0 if institution has no credits.
      */
-    function tvdPerVote(address institution) external view returns (uint256 tvd) {
-        uint256 credits = creditBalance[institution];
-        if (credits == 0) return 0;
-        return lockedTVD[institution] / credits;
+    function getInstitution(address institution)
+        external
+        view
+        onlyOwner
+        onlyOperator
+        returns (uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD, address vestingSource)
+    {
+        Institution storage inst = institutions[institution];
+        creditBalance = inst.creditBalance;
+        lockedTVD = inst.lockedTVD;
+        pendingTVD = inst.pendingTVD;
+        vestingSource = inst.vestingSource;
     }
 }

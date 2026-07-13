@@ -1,0 +1,41 @@
+name: CI
+
+permissions: {}
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check:
+    name: Foundry project
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Run Forge fmt
+        run: forge fmt --check
+
+      - name: Run Forge build
+        run: forge build --sizes
+
+      - name: Run Tests - Token Module
+        run: forge test -vvv --match-path "test/tvd-token/*.sol"
+
+      - name: Run Tests - Election Vote Module
+        run: forge test -vvv --match-path "test/BackVoteManager.t.sol"

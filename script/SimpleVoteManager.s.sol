@@ -12,8 +12,7 @@ contract SimpleVoteManagerScript is Script {
         vm.startBroadcast();
 
         address voteProxy = Upgrades.deployUUPSProxy(
-            "SimpleVoteManager.sol",
-            abi.encodeCall(SimpleVoteManager.initialize, (msg.sender))
+            "SimpleVoteManager.sol", abi.encodeCall(SimpleVoteManager.initialize, (msg.sender))
         );
 
         vm.stopBroadcast();

@@ -23,13 +23,7 @@ contract TVDMultisig {
     // ──────────────────────────────────────────────────────────────────
 
     event Deposit(address indexed sender, uint256 value);
-    event SubmitTransaction(
-        address indexed owner,
-        uint256 indexed txId,
-        address indexed to,
-        uint256 value,
-        bytes   data
-    );
+    event SubmitTransaction(address indexed owner, uint256 indexed txId, address indexed to, uint256 value, bytes data);
     event ConfirmTransaction(address indexed owner, uint256 indexed txId);
     event RevokeConfirmation(address indexed owner, uint256 indexed txId);
     event ExecuteTransaction(address indexed owner, uint256 indexed txId);
@@ -44,8 +38,8 @@ contract TVDMultisig {
     struct Transaction {
         address to;
         uint256 value;
-        bytes   data;
-        bool    executed;
+        bytes data;
+        bool executed;
     }
 
     address[] public owners;
@@ -98,15 +92,12 @@ contract TVDMultisig {
      */
     constructor(address[] memory _owners, uint256 _required) {
         require(_owners.length > 0, "Multisig: owners required");
-        require(
-            _required > 0 && _required <= _owners.length,
-            "Multisig: invalid required count"
-        );
+        require(_required > 0 && _required <= _owners.length, "Multisig: invalid required count");
 
         for (uint256 i = 0; i < _owners.length; i++) {
             address owner = _owners[i];
             require(owner != address(0), "Multisig: invalid owner");
-            require(!isOwner[owner],     "Multisig: duplicate owner");
+            require(!isOwner[owner], "Multisig: duplicate owner");
 
             isOwner[owner] = true;
             owners.push(owner);
@@ -146,12 +137,7 @@ contract TVDMultisig {
         require(to != address(0), "Multisig: invalid target");
 
         txId = transactions.length;
-        transactions.push(Transaction({
-            to:       to,
-            value:    value,
-            data:     data,
-            executed: false
-        }));
+        transactions.push(Transaction({to: to, value: value, data: data, executed: false}));
 
         emit SubmitTransaction(msg.sender, txId, to, value, data);
 
@@ -163,13 +149,7 @@ contract TVDMultisig {
      * @notice Confirm a pending transaction.
      * @param txId Transaction index.
      */
-    function confirmTransaction(uint256 txId)
-        external
-        onlyOwner
-        txExists(txId)
-        notExecuted(txId)
-        notConfirmed(txId)
-    {
+    function confirmTransaction(uint256 txId) external onlyOwner txExists(txId) notExecuted(txId) notConfirmed(txId) {
         _confirm(txId);
     }
 
@@ -177,12 +157,7 @@ contract TVDMultisig {
      * @notice Revoke a previously given confirmation (only before execution).
      * @param txId Transaction index.
      */
-    function revokeConfirmation(uint256 txId)
-        external
-        onlyOwner
-        txExists(txId)
-        notExecuted(txId)
-    {
+    function revokeConfirmation(uint256 txId) external onlyOwner txExists(txId) notExecuted(txId) {
         require(confirmations[txId][msg.sender], "Multisig: not confirmed");
         confirmations[txId][msg.sender] = false;
         emit RevokeConfirmation(msg.sender, txId);
@@ -192,16 +167,8 @@ contract TVDMultisig {
      * @notice Execute a transaction once the required confirmations are met.
      * @param txId Transaction index.
      */
-    function executeTransaction(uint256 txId)
-        external
-        onlyOwner
-        txExists(txId)
-        notExecuted(txId)
-    {
-        require(
-            getConfirmationCount(txId) >= required,
-            "Multisig: not enough confirmations"
-        );
+    function executeTransaction(uint256 txId) external onlyOwner txExists(txId) notExecuted(txId) {
+        require(getConfirmationCount(txId) >= required, "Multisig: not enough confirmations");
 
         Transaction storage txn = transactions[txId];
         txn.executed = true;
@@ -230,7 +197,7 @@ contract TVDMultisig {
      */
     function addOwner(address owner) external onlyWallet {
         require(owner != address(0), "Multisig: invalid owner");
-        require(!isOwner[owner],     "Multisig: already an owner");
+        require(!isOwner[owner], "Multisig: already an owner");
 
         isOwner[owner] = true;
         owners.push(owner);
@@ -272,10 +239,7 @@ contract TVDMultisig {
      * @param _required New threshold (1 ≤ _required ≤ owners.length).
      */
     function changeRequirement(uint256 _required) external onlyWallet {
-        require(
-            _required > 0 && _required <= owners.length,
-            "Multisig: invalid required count"
-        );
+        require(_required > 0 && _required <= owners.length, "Multisig: invalid required count");
         required = _required;
         emit RequirementChanged(_required);
     }
@@ -302,22 +266,10 @@ contract TVDMultisig {
         external
         view
         txExists(txId)
-        returns (
-            address to,
-            uint256 value,
-            bytes memory data,
-            bool    executed,
-            uint256 confirmationCount
-        )
+        returns (address to, uint256 value, bytes memory data, bool executed, uint256 confirmationCount)
     {
         Transaction storage txn = transactions[txId];
-        return (
-            txn.to,
-            txn.value,
-            txn.data,
-            txn.executed,
-            getConfirmationCount(txId)
-        );
+        return (txn.to, txn.value, txn.data, txn.executed, getConfirmationCount(txId));
     }
 
     /**
@@ -334,11 +286,7 @@ contract TVDMultisig {
      * @notice Returns the addresses that have confirmed a transaction.
      * @param txId Transaction index.
      */
-    function getConfirmations(uint256 txId)
-        external
-        view
-        returns (address[] memory confirmed)
-    {
+    function getConfirmations(uint256 txId) external view returns (address[] memory confirmed) {
         address[] memory temp = new address[](owners.length);
         uint256 count;
         for (uint256 i = 0; i < owners.length; i++) {
@@ -376,11 +324,7 @@ contract TVDMultisig {
         emit ConfirmTransaction(msg.sender, txId);
     }
 
-    function _filterTransactions(bool executed)
-        internal
-        view
-        returns (uint256[] memory result)
-    {
+    function _filterTransactions(bool executed) internal view returns (uint256[] memory result) {
         uint256 total = transactions.length;
         uint256 count;
         for (uint256 i = 0; i < total; i++) {

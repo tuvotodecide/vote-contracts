@@ -64,36 +64,28 @@ contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
         address vestingContract,
         address admin
     ) ERC20("Tu Voto Decide", "TVD") ERC20Capped(MAX_SUPPLY) {
-        require(liquidityWallet != address(0),  "TVD: invalid liquidity wallet");
-        require(treasuryWallet  != address(0),  "TVD: invalid treasury wallet");
-        require(ecosystemWallet != address(0),  "TVD: invalid ecosystem wallet");
-        require(vestingContract != address(0),  "TVD: invalid vesting contract");
-        require(admin           != address(0),  "TVD: invalid admin");
+        require(liquidityWallet != address(0), "TVD: invalid liquidity wallet");
+        require(treasuryWallet != address(0), "TVD: invalid treasury wallet");
+        require(ecosystemWallet != address(0), "TVD: invalid ecosystem wallet");
+        require(vestingContract != address(0), "TVD: invalid vesting contract");
+        require(admin != address(0), "TVD: invalid admin");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
         // ── Mint full TGE supply ─────────────────────────────────────
-        _mint(liquidityWallet,  4_200_000 * 10 ** 18); // 20% — immediate
-        _mint(treasuryWallet,   8_400_000 * 10 ** 18); // 40% — B2B treasury
-        _mint(ecosystemWallet,  5_250_000 * 10 ** 18); // 25% — ecosystem
-        _mint(vestingContract,  3_150_000 * 10 ** 18); // 15% — team vesting
+        _mint(liquidityWallet, 4_200_000 * 10 ** 18); // 20% — immediate
+        _mint(treasuryWallet, 8_400_000 * 10 ** 18); // 40% — B2B treasury
+        _mint(ecosystemWallet, 5_250_000 * 10 ** 18); // 25% — ecosystem
+        _mint(vestingContract, 3_150_000 * 10 ** 18); // 15% — team vesting
 
-        emit InitialDistribution(
-            liquidityWallet,
-            treasuryWallet,
-            ecosystemWallet,
-            vestingContract
-        );
+        emit InitialDistribution(liquidityWallet, treasuryWallet, ecosystemWallet, vestingContract);
     }
 
     // ──────────────────────────────────────────────────────────────────
     // Required override — ERC20 + ERC20Capped share _update hook
     // ──────────────────────────────────────────────────────────────────
 
-    function _update(address from, address to, uint256 value)
-        internal
-        override(ERC20, ERC20Capped)
-    {
+    function _update(address from, address to, uint256 value) internal override(ERC20, ERC20Capped) {
         super._update(from, to, value);
     }
 }

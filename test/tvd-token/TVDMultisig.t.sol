@@ -23,11 +23,11 @@ contract MockTarget {
 
 contract TVDMultisigTest is Test {
     TVDMultisig public multisig;
-    MockTarget  public target;
+    MockTarget public target;
 
-    address public owner1   = makeAddr("owner1");
-    address public owner2   = makeAddr("owner2");
-    address public owner3   = makeAddr("owner3");
+    address public owner1 = makeAddr("owner1");
+    address public owner2 = makeAddr("owner2");
+    address public owner3 = makeAddr("owner3");
     address public stranger = makeAddr("stranger");
     address public newOwner = makeAddr("newOwner");
 
@@ -37,7 +37,9 @@ contract TVDMultisigTest is Test {
 
     function _owners() internal view returns (address[] memory o) {
         o = new address[](3);
-        o[0] = owner1; o[1] = owner2; o[2] = owner3;
+        o[0] = owner1;
+        o[1] = owner2;
+        o[2] = owner3;
     }
 
     /// Submit from owner1 and collect second confirmation from owner2 (2-of-3).
@@ -50,7 +52,7 @@ contract TVDMultisigTest is Test {
 
     function setUp() public {
         multisig = new TVDMultisig(_owners(), 2);
-        target   = new MockTarget();
+        target = new MockTarget();
         vm.deal(address(multisig), 10 ether);
     }
 
@@ -91,14 +93,16 @@ contract TVDMultisigTest is Test {
 
     function test_constructor_revertsZeroAddressOwner() public {
         address[] memory o = new address[](2);
-        o[0] = owner1; o[1] = address(0);
+        o[0] = owner1;
+        o[1] = address(0);
         vm.expectRevert("Multisig: invalid owner");
         new TVDMultisig(o, 1);
     }
 
     function test_constructor_revertsDuplicateOwner() public {
         address[] memory o = new address[](2);
-        o[0] = owner1; o[1] = owner1;
+        o[0] = owner1;
+        o[1] = owner1;
         vm.expectRevert("Multisig: duplicate owner");
         new TVDMultisig(o, 1);
     }
@@ -401,7 +405,8 @@ contract TVDMultisigTest is Test {
     function test_removeOwner_clampsRequired() public {
         // Deploy a 2-of-2 multisig, then remove one owner → required must drop to 1
         address[] memory two = new address[](2);
-        two[0] = owner1; two[1] = owner2;
+        two[0] = owner1;
+        two[1] = owner2;
         TVDMultisig ms = new TVDMultisig(two, 2);
 
         bytes memory data = abi.encodeCall(TVDMultisig.removeOwner, (owner2));
@@ -525,8 +530,7 @@ contract TVDMultisigTest is Test {
         vm.prank(owner1);
         uint256 txId = multisig.submitTransaction(address(target), 0, data);
 
-        (address to, uint256 val,, bool executed, uint256 count) =
-            multisig.getTransaction(txId);
+        (address to, uint256 val,, bool executed, uint256 count) = multisig.getTransaction(txId);
 
         assertEq(to, address(target));
         assertEq(val, 0);

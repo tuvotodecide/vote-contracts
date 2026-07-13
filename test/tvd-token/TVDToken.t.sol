@@ -7,19 +7,19 @@ import {TVDToken} from "../../src/tvd-token/TVDToken.sol";
 contract TVDTokenTest is Test {
     TVDToken public token;
 
-    address public admin        = makeAddr("admin");
-    address public liquidity    = makeAddr("liquidity");
-    address public treasury     = makeAddr("treasury");
-    address public ecosystem    = makeAddr("ecosystem");
-    address public vestingAddr  = makeAddr("vesting");
-    address public alice        = makeAddr("alice");
-    address public bob          = makeAddr("bob");
+    address public admin = makeAddr("admin");
+    address public liquidity = makeAddr("liquidity");
+    address public treasury = makeAddr("treasury");
+    address public ecosystem = makeAddr("ecosystem");
+    address public vestingAddr = makeAddr("vesting");
+    address public alice = makeAddr("alice");
+    address public bob = makeAddr("bob");
 
-    uint256 constant LIQUIDITY_AMOUNT  = 4_200_000e18;
-    uint256 constant TREASURY_AMOUNT   = 8_400_000e18;
-    uint256 constant ECOSYSTEM_AMOUNT  = 5_250_000e18;
-    uint256 constant VESTING_AMOUNT    = 3_150_000e18;
-    uint256 constant MAX_SUPPLY        = 21_000_000e18;
+    uint256 constant LIQUIDITY_AMOUNT = 4_200_000e18;
+    uint256 constant TREASURY_AMOUNT = 8_400_000e18;
+    uint256 constant ECOSYSTEM_AMOUNT = 5_250_000e18;
+    uint256 constant VESTING_AMOUNT = 3_150_000e18;
+    uint256 constant MAX_SUPPLY = 21_000_000e18;
 
     function setUp() public {
         token = new TVDToken(liquidity, treasury, ecosystem, vestingAddr, admin);

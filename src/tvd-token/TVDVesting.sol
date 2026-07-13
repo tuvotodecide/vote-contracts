@@ -33,27 +33,22 @@ contract TVDVesting is Ownable, ReentrancyGuard {
     IERC20 public immutable token;
 
     struct VestingSchedule {
-        uint256 totalAmount;    // Total TVD allocated to this beneficiary
+        uint256 totalAmount; // Total TVD allocated to this beneficiary
         uint256 releasedAmount; // TVD already transferred to beneficiary
-        uint64  startTime;      // Unix timestamp of schedule creation (TGE)
-        uint64  cliffDuration;  // Seconds during which nothing is released
-        uint64  vestingDuration;// Seconds of linear release after the cliff ends
-        bool    revoked;        // True if admin revoked unvested portion
+        uint64 startTime; // Unix timestamp of schedule creation (TGE)
+        uint64 cliffDuration; // Seconds during which nothing is released
+        uint64 vestingDuration; // Seconds of linear release after the cliff ends
+        bool revoked; // True if admin revoked unvested portion
     }
 
-    mapping(address => VestingSchedule) public schedules;
+    mapping(address => VestingSchedule) private schedules;
     address[] private _beneficiaryList;
 
     // ──────────────────────────────────────────────────────────────────
     // Events
     // ──────────────────────────────────────────────────────────────────
 
-    event BeneficiaryAdded(
-        address indexed beneficiary,
-        uint256 amount,
-        uint64  cliffDuration,
-        uint64  vestingDuration
-    );
+    event BeneficiaryAdded(address indexed beneficiary, uint256 amount, uint64 cliffDuration, uint64 vestingDuration);
     event TokensReleased(address indexed beneficiary, uint256 amount);
     event ScheduleRevoked(address indexed beneficiary, uint256 unvestedRefunded);
 
@@ -83,31 +78,23 @@ contract TVDVesting is Ownable, ReentrancyGuard {
      * @param cliffDuration   Seconds of hard lock-up (e.g. 365 days).
      * @param vestingDuration Seconds of linear release after cliff (e.g. 730 days).
      */
-    function addBeneficiary(
-        address beneficiary,
-        uint256 amount,
-        uint64  cliffDuration,
-        uint64  vestingDuration
-    ) external onlyOwner {
-        require(beneficiary     != address(0), "TVDVesting: invalid beneficiary");
-        require(amount          > 0,           "TVDVesting: amount must be > 0");
-        require(vestingDuration > 0,           "TVDVesting: vesting duration must be > 0");
-        require(
-            schedules[beneficiary].totalAmount == 0,
-            "TVDVesting: beneficiary already registered"
-        );
-        require(
-            token.balanceOf(address(this)) >= amount,
-            "TVDVesting: insufficient contract balance"
-        );
+    function addBeneficiary(address beneficiary, uint256 amount, uint64 cliffDuration, uint64 vestingDuration)
+        external
+        onlyOwner
+    {
+        require(beneficiary != address(0), "TVDVesting: invalid beneficiary");
+        require(amount > 0, "TVDVesting: amount must be > 0");
+        require(vestingDuration > 0, "TVDVesting: vesting duration must be > 0");
+        require(schedules[beneficiary].totalAmount == 0, "TVDVesting: beneficiary already registered");
+        require(token.balanceOf(address(this)) >= amount, "TVDVesting: insufficient contract balance");
 
         schedules[beneficiary] = VestingSchedule({
-            totalAmount:     amount,
-            releasedAmount:  0,
-            startTime:       uint64(block.timestamp),
-            cliffDuration:   cliffDuration,
+            totalAmount: amount,
+            releasedAmount: 0,
+            startTime: uint64(block.timestamp),
+            cliffDuration: cliffDuration,
             vestingDuration: vestingDuration,
-            revoked:         false
+            revoked: false
         });
         _beneficiaryList.push(beneficiary);
 
@@ -123,10 +110,10 @@ contract TVDVesting is Ownable, ReentrancyGuard {
      */
     function revoke(address beneficiary) external onlyOwner nonReentrant {
         VestingSchedule storage s = schedules[beneficiary];
-        require(s.totalAmount > 0,  "TVDVesting: beneficiary not found");
-        require(!s.revoked,         "TVDVesting: schedule already revoked");
+        require(s.totalAmount > 0, "TVDVesting: beneficiary not found");
+        require(!s.revoked, "TVDVesting: schedule already revoked");
 
-        uint256 vested    = _vestedAmount(s);
+        uint256 vested = _vestedAmount(s);
         uint256 toRelease = vested - s.releasedAmount;
 
         // Release what was already earned before the revoke
@@ -161,10 +148,7 @@ contract TVDVesting is Ownable, ReentrancyGuard {
      * @param beneficiary Target beneficiary.
      */
     function releaseFor(address beneficiary) external nonReentrant {
-        require(
-            msg.sender == beneficiary || msg.sender == owner(),
-            "TVDVesting: unauthorized"
-        );
+        require(msg.sender == beneficiary || msg.sender == owner(), "TVDVesting: unauthorized");
         _release(beneficiary);
     }
 
@@ -173,27 +157,49 @@ contract TVDVesting is Ownable, ReentrancyGuard {
     // ──────────────────────────────────────────────────────────────────
 
     /**
+     * @notice Amount of TVD releasable right now for caller.
+     */
+    function releasable() public view returns (uint256) {
+        return _releasable(msg.sender);
+    }
+
+    /**
      * @notice Amount of TVD releasable right now for a given beneficiary.
      */
-    function releasable(address beneficiary) public view returns (uint256) {
-        VestingSchedule storage s = schedules[beneficiary];
-        if (s.totalAmount == 0 || s.revoked) return 0;
-        return _vestedAmount(s) - s.releasedAmount;
+    function releasableBy(address beneficiary) public view onlyOwner returns (uint256) {
+        return _releasable(beneficiary);
     }
 
     /**
      * @notice Cumulative TVD vested so far (regardless of how much was claimed).
      */
-    function vestedAmount(address beneficiary) external view returns (uint256) {
+    function vestedAmount() external view returns (uint256) {
+        VestingSchedule storage s = schedules[msg.sender];
+        if (s.totalAmount == 0) return 0;
+        return _vestedAmount(s);
+    }
+
+    /**
+     * @notice Cumulative TVD vested for a given beneficiary so far (regardless of how much was claimed).
+     */
+    function vestedAmountFor(address beneficiary) external view onlyOwner returns (uint256) {
         VestingSchedule storage s = schedules[beneficiary];
         if (s.totalAmount == 0) return 0;
         return _vestedAmount(s);
     }
 
     /**
+     * @notice Returns the vesting schedule for a given beneficiary.
+     * @param beneficiary Target beneficiary.
+     */
+    function getVestingSchedule(address beneficiary) external view onlyOwner returns (VestingSchedule memory) {
+        return schedules[beneficiary];
+    }
+
+    /**
      * @notice Returns all registered beneficiary addresses.
      */
-    function getBeneficiaries() external view returns (address[] memory) {
+    function getBeneficiaries() external view onlyOwner returns (address[] memory) {
         return _beneficiaryList;
     }
 
@@ -201,8 +207,14 @@ contract TVDVesting is Ownable, ReentrancyGuard {
     // Internal helpers
     // ──────────────────────────────────────────────────────────────────
 
+    function _releasable(address beneficiary) internal view returns (uint256) {
+        VestingSchedule storage s = schedules[beneficiary];
+        if (s.totalAmount == 0 || s.revoked) return 0;
+        return _vestedAmount(s) - s.releasedAmount;
+    }
+
     function _release(address beneficiary) internal {
-        uint256 amount = releasable(beneficiary);
+        uint256 amount = _releasable(beneficiary);
         require(amount > 0, "TVDVesting: nothing to release");
 
         schedules[beneficiary].releasedAmount += amount;
@@ -218,13 +230,9 @@ contract TVDVesting is Ownable, ReentrancyGuard {
      *      Returns 0 while in cliff, totalAmount once fully vested,
      *      and a pro-rata amount in between.
      */
-    function _vestedAmount(VestingSchedule storage s)
-        internal
-        view
-        returns (uint256)
-    {
+    function _vestedAmount(VestingSchedule storage s) internal view returns (uint256) {
         // Snap to the nearest complete day (floor).
-        uint256 elapsed = ((block.timestamp - s.startTime) / 1 days) * 1 days;
+        uint256 elapsed = 1 days * ((block.timestamp - s.startTime) / 1 days);
 
         if (elapsed < s.cliffDuration) {
             return 0; // Still in cliff — nothing vested yet

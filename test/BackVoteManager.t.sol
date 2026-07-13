@@ -37,7 +37,7 @@ contract BackVoteManagerTest is Test {
 
         // Default dates: start in 2 days, end in 4 days, results in 6 days
         startDate = uint48(block.timestamp + 2 days);
-        endDate   = uint48(block.timestamp + 4 days);
+        endDate = uint48(block.timestamp + 4 days);
         resultsDate = uint48(block.timestamp + 6 days);
 
         // Default voters
@@ -149,7 +149,7 @@ contract BackVoteManagerTest is Test {
         manager.createVote(VOTE_ID, VOTE_NAME, startDate, endDate, resultsDate, voters, options);
 
         uint48 newStart = uint48(block.timestamp + 3 days);
-        uint48 newEnd   = uint48(block.timestamp + 5 days);
+        uint48 newEnd = uint48(block.timestamp + 5 days);
         uint48 newResults = uint48(block.timestamp + 7 days);
 
         vm.prank(authorizedCaller);
@@ -175,7 +175,7 @@ contract BackVoteManagerTest is Test {
         vm.warp(startDate - 23 hours);
 
         uint48 newStart = uint48(block.timestamp + 3 days);
-        uint48 newEnd   = uint48(block.timestamp + 5 days);
+        uint48 newEnd = uint48(block.timestamp + 5 days);
         uint48 newResults = uint48(block.timestamp + 7 days);
 
         vm.expectRevert("Too near to vote start date");
@@ -214,7 +214,7 @@ contract BackVoteManagerTest is Test {
         vm.prank(authorizedCaller);
         manager.addNewVoters(VOTE_ID, newVoters);
 
-        (, , , , uint48 totalVoters, ) = manager.getVoteInfo(VOTE_ID);
+        (,,,, uint48 totalVoters,) = manager.getVoteInfo(VOTE_ID);
         assertEq(totalVoters, 5);
     }
 
@@ -230,7 +230,7 @@ contract BackVoteManagerTest is Test {
         vm.prank(authorizedCaller);
         manager.addNewVoters(VOTE_ID, newVoters);
 
-        (, , , , uint48 totalVoters, ) = manager.getVoteInfo(VOTE_ID);
+        (,,,, uint48 totalVoters,) = manager.getVoteInfo(VOTE_ID);
         assertEq(totalVoters, 4);
     }
 
@@ -443,7 +443,7 @@ contract BackVoteManagerTest is Test {
 
         (string[] memory opts, uint256[] memory counts) = manager.getVoteResults(VOTE_ID);
         assertEq(opts.length, 3);
-        for (uint i = 0; i < counts.length; i++) {
+        for (uint256 i = 0; i < counts.length; i++) {
             assertEq(counts[i], 0);
         }
     }
@@ -530,7 +530,7 @@ contract BackVoteManagerTest is Test {
         vm.stopPrank();
 
         uint48 newStart = uint48(block.timestamp + 3 days);
-        uint48 newEnd   = uint48(block.timestamp + 5 days);
+        uint48 newEnd = uint48(block.timestamp + 5 days);
         uint48 newResults = uint48(block.timestamp + 7 days);
 
         vm.expectRevert("Vote is not active");

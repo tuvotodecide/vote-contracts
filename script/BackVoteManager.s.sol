@@ -14,8 +14,7 @@ contract BackVoteManagerScript is Script {
         address caller = address(0x2Df3821cf770C501aaAB5F8F2e30C55c7e249010);
 
         address voteProxy = Upgrades.deployUUPSProxy(
-            "BackVoteManager.sol",
-            abi.encodeCall(BackVoteManager.initialize, (msg.sender, caller))
+            "BackVoteManager.sol", abi.encodeCall(BackVoteManager.initialize, (msg.sender, caller))
         );
 
         vm.stopBroadcast();

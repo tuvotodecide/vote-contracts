@@ -2,25 +2,25 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {TVDToken}   from "../../src/tvd-token/TVDToken.sol";
+import {TVDToken} from "../../src/tvd-token/TVDToken.sol";
 import {TVDVesting} from "../../src/tvd-token/TVDVesting.sol";
 
 contract TVDVestingTest is Test {
-    TVDToken   public token;
+    TVDToken public token;
     TVDVesting public vesting;
 
-    address public admin     = makeAddr("admin");
+    address public admin = makeAddr("admin");
     address public liquidity = makeAddr("liquidity");
-    address public treasury  = makeAddr("treasury");
+    address public treasury = makeAddr("treasury");
     address public ecosystem = makeAddr("ecosystem");
-    address public alice     = makeAddr("alice");   // team beneficiary
-    address public bob       = makeAddr("bob");     // another beneficiary
-    address public stranger  = makeAddr("stranger");
+    address public alice = makeAddr("alice"); // team beneficiary
+    address public bob = makeAddr("bob"); // another beneficiary
+    address public stranger = makeAddr("stranger");
 
     uint256 constant VESTING_POOL = 3_150_000e18;
 
     // Default schedule matching the whitepaper
-    uint64 constant CLIFF    = 365 days;
+    uint64 constant CLIFF = 365 days;
     uint64 constant DURATION = 730 days;
 
     function setUp() public {
@@ -61,10 +61,10 @@ contract TVDVestingTest is Test {
         uint256 amount = 1_000e18;
         vm.prank(admin);
         vesting.addBeneficiary(alice, amount, CLIFF, DURATION);
-
-        (uint256 total,,,,, bool revoked) = vesting.schedules(alice);
-        assertEq(total, amount);
-        assertFalse(revoked);
+        vm.prank(admin);
+        TVDVesting.VestingSchedule memory schedule = vesting.getVestingSchedule(alice);
+        assertEq(schedule.totalAmount, amount);
+        assertFalse(schedule.revoked);
     }
 
     function test_addBeneficiary_emitsEvent() public {
@@ -123,7 +123,8 @@ contract TVDVestingTest is Test {
         vesting.addBeneficiary(alice, 1_000e18, CLIFF, DURATION);
 
         vm.warp(block.timestamp + CLIFF - 1);
-        assertEq(vesting.releasable(alice), 0);
+        vm.prank(alice);
+        assertEq(vesting.releasable(), 0);
     }
 
     function test_releasable_zeroAtCliffStart() public {
@@ -132,7 +133,8 @@ contract TVDVestingTest is Test {
 
         // Exactly at cliff end — 0 seconds post-cliff → still 0
         vm.warp(block.timestamp + CLIFF);
-        assertEq(vesting.releasable(alice), 0);
+        vm.prank(alice);
+        assertEq(vesting.releasable(), 0);
     }
 
     function test_releasable_partialAfterHalfVesting() public {
@@ -144,7 +146,8 @@ contract TVDVestingTest is Test {
         vm.warp(block.timestamp + CLIFF + DURATION / 2);
 
         uint256 expected = amount / 2;
-        assertApproxEqAbs(vesting.releasable(alice), expected, 1e15); // 0.001 TVD tolerance
+        vm.prank(alice);
+        assertApproxEqAbs(vesting.releasable(), expected, 1e15); // 0.001 TVD tolerance
     }
 
     function test_releasable_fullAfterVestingComplete() public {
@@ -153,18 +156,21 @@ contract TVDVestingTest is Test {
         vesting.addBeneficiary(alice, amount, CLIFF, DURATION);
 
         vm.warp(block.timestamp + CLIFF + DURATION);
-        assertEq(vesting.releasable(alice), amount);
+        vm.prank(alice);
+        assertEq(vesting.releasable(), amount);
     }
 
-    function test_releasable_zeroForUnregistered() public view {
-        assertEq(vesting.releasable(stranger), 0);
+    function test_releasable_zeroForUnregistered() public {
+        vm.prank(stranger);
+        assertEq(vesting.releasable(), 0);
     }
 
     function test_vestedAmount_zeroBeforeCliff() public {
         vm.prank(admin);
         vesting.addBeneficiary(alice, 1_000e18, CLIFF, DURATION);
 
-        assertEq(vesting.vestedAmount(alice), 0);
+        vm.prank(alice);
+        assertEq(vesting.vestedAmount(), 0);
     }
 
     function test_vestedAmount_fullAfterVesting() public {
@@ -173,7 +179,8 @@ contract TVDVestingTest is Test {
         vesting.addBeneficiary(alice, amount, CLIFF, DURATION);
 
         vm.warp(block.timestamp + CLIFF + DURATION + 1 days);
-        assertEq(vesting.vestedAmount(alice), amount);
+        vm.prank(alice);
+        assertEq(vesting.vestedAmount(), amount);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -212,8 +219,9 @@ contract TVDVestingTest is Test {
         vm.prank(alice);
         vesting.release();
 
-        (, uint256 released,,,,) = vesting.schedules(alice);
-        assertEq(released, amount);
+        vm.prank(admin);
+        TVDVesting.VestingSchedule memory schedule = vesting.getVestingSchedule(alice);
+        assertEq(schedule.releasedAmount, amount);
     }
 
     function test_release_emitsEvent() public {
@@ -328,11 +336,7 @@ contract TVDVestingTest is Test {
         // Alice receives her vested portion
         assertApproxEqAbs(token.balanceOf(alice), expectedVested, 1e15);
         // Unvested remainder stays in the contract
-        assertApproxEqAbs(
-            token.balanceOf(address(vesting)),
-            contractBalBefore - expectedVested,
-            1e15
-        );
+        assertApproxEqAbs(token.balanceOf(address(vesting)), contractBalBefore - expectedVested, 1e15);
     }
 
     function test_revoke_marksScheduleRevoked() public {
@@ -342,8 +346,9 @@ contract TVDVestingTest is Test {
         vm.prank(admin);
         vesting.revoke(alice);
 
-        (,,,,, bool revoked) = vesting.schedules(alice);
-        assertTrue(revoked);
+        vm.prank(admin);
+        TVDVesting.VestingSchedule memory schedule = vesting.getVestingSchedule(alice);
+        assertTrue(schedule.revoked);
     }
 
     function test_revoke_revertsAlreadyRevoked() public {
@@ -380,7 +385,8 @@ contract TVDVestingTest is Test {
         vesting.revoke(alice);
 
         vm.warp(block.timestamp + CLIFF + DURATION);
-        assertEq(vesting.releasable(alice), 0);
+        vm.prank(alice);
+        assertEq(vesting.releasable(), 0);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -390,12 +396,99 @@ contract TVDVestingTest is Test {
     function test_getBeneficiaries_returnsAll() public {
         vm.startPrank(admin);
         vesting.addBeneficiary(alice, 500e18, CLIFF, DURATION);
-        vesting.addBeneficiary(bob,   500e18, CLIFF, DURATION);
-        vm.stopPrank();
+        vesting.addBeneficiary(bob, 500e18, CLIFF, DURATION);
 
         address[] memory beneficiaries = vesting.getBeneficiaries();
+        vm.stopPrank();
+
         assertEq(beneficiaries.length, 2);
         assertEq(beneficiaries[0], alice);
         assertEq(beneficiaries[1], bob);
+    }
+
+    function test_getBeneficiaries_revertsNotOwner() public {
+        vm.prank(stranger);
+        vm.expectRevert();
+        vesting.getBeneficiaries();
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // releasableBy / vestedAmountFor / getVestingSchedule — owner-only views
+    // ──────────────────────────────────────────────────────────────────
+
+    function test_releasableBy_matchesReleasable() public {
+        uint256 amount = 1_000e18;
+        vm.prank(admin);
+        vesting.addBeneficiary(alice, amount, CLIFF, DURATION);
+
+        vm.warp(block.timestamp + CLIFF + DURATION / 2);
+
+        vm.prank(admin);
+        uint256 viaOwner = vesting.releasableBy(alice);
+
+        vm.prank(alice);
+        uint256 viaSelf = vesting.releasable();
+
+        assertEq(viaOwner, viaSelf);
+        assertGt(viaOwner, 0);
+    }
+
+    function test_releasableBy_revertsNotOwner() public {
+        vm.prank(admin);
+        vesting.addBeneficiary(alice, 1_000e18, CLIFF, DURATION);
+
+        vm.prank(stranger);
+        vm.expectRevert();
+        vesting.releasableBy(alice);
+    }
+
+    function test_vestedAmountFor_matchesVestedAmount() public {
+        uint256 amount = 1_000e18;
+        vm.prank(admin);
+        vesting.addBeneficiary(alice, amount, CLIFF, DURATION);
+
+        vm.warp(block.timestamp + CLIFF + DURATION + 1 days);
+
+        vm.prank(admin);
+        uint256 viaOwner = vesting.vestedAmountFor(alice);
+        assertEq(viaOwner, amount);
+    }
+
+    function test_vestedAmountFor_zeroForUnregistered() public {
+        vm.prank(admin);
+        assertEq(vesting.vestedAmountFor(stranger), 0);
+    }
+
+    function test_vestedAmountFor_revertsNotOwner() public {
+        vm.prank(admin);
+        vesting.addBeneficiary(alice, 1_000e18, CLIFF, DURATION);
+
+        vm.prank(stranger);
+        vm.expectRevert();
+        vesting.vestedAmountFor(alice);
+    }
+
+    function test_getVestingSchedule_revertsNotOwner() public {
+        vm.prank(admin);
+        vesting.addBeneficiary(alice, 1_000e18, CLIFF, DURATION);
+
+        vm.prank(stranger);
+        vm.expectRevert();
+        vesting.getVestingSchedule(alice);
+    }
+
+    function test_getVestingSchedule_returnsFullSchedule() public {
+        uint256 amount = 1_000e18;
+        vm.prank(admin);
+        vesting.addBeneficiary(alice, amount, CLIFF, DURATION);
+
+        vm.prank(admin);
+        TVDVesting.VestingSchedule memory schedule = vesting.getVestingSchedule(alice);
+
+        assertEq(schedule.totalAmount, amount);
+        assertEq(schedule.releasedAmount, 0);
+        assertEq(schedule.cliffDuration, CLIFF);
+        assertEq(schedule.vestingDuration, DURATION);
+        assertFalse(schedule.revoked);
     }
 }

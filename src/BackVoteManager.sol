@@ -387,11 +387,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @notice Disables an active vote, preventing further casts.
     /// @dev Only callable by the owning institution's admin or an authorized address. Irreversible.
     /// @param id Id of the vote to disable.
-    function disableVote(uint256 id)
-        external
-        activeVote(id)
-        onlyAuthorizedInInstitution(votes[id].institutionId)
-    {
+    function disableVote(uint256 id) external activeVote(id) onlyAuthorizedInInstitution(votes[id].institutionId) {
         voteStates[id] = 1;
     }
 
@@ -415,13 +411,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         uint256[2] calldata pA,
         uint256[2][2] calldata pB,
         uint256[2] calldata pC
-    )
-        external
-        nonReentrant
-        existingVote(voteId)
-        activeVote(voteId)
-        onlyAuthorizedCaller
-    {
+    ) external nonReentrant existingVote(voteId) activeVote(voteId) onlyAuthorizedCaller {
         Vote storage vote = votes[voteId];
         require(block.timestamp >= vote.startDate && block.timestamp <= vote.endDate, "Voting is not active");
         require(vote.existingOptions[optionId], "Invalid option");

@@ -162,11 +162,7 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
      * @param electionId    Identifier of the election these credits back.
      * @param creditsToBuy Number of electoral credits to purchase.
      */
-    function topUp(address institution, uint256 electionId, uint256 creditsToBuy)
-        external
-        nonReentrant
-        onlyOperator
-    {
+    function topUp(address institution, uint256 electionId, uint256 creditsToBuy) external nonReentrant onlyOperator {
         require(institution != address(0), "TVDCredits: invalid institution");
         require(creditsToBuy > 0, "TVDCredits: credits must be > 0");
 
@@ -385,7 +381,13 @@ contract TVDElectoralCredits is Ownable, ReentrancyGuard {
         view
         onlyOwner
         onlyOperator
-        returns (address institution, uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD, address vestingSource)
+        returns (
+            address institution,
+            uint256 creditBalance,
+            uint256 lockedTVD,
+            uint256 pendingTVD,
+            address vestingSource
+        )
     {
         Institution storage inst = elections[electionId];
         institution = inst.institution;

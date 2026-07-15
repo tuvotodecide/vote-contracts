@@ -178,9 +178,7 @@ contract BackVoteManagerTest is Test {
 
     function test_initialize_cannotReinitialize() public {
         vm.expectRevert();
-        manager.initialize(
-            nonOwner, unauthorizedCaller, address(creditsContract), address(verifier), address(tvdToken)
-        );
+        manager.initialize(nonOwner, unauthorizedCaller, address(creditsContract), address(verifier), address(tvdToken));
     }
 
     function test_setAuthorizedCaller_success() public {
@@ -421,7 +419,10 @@ contract BackVoteManagerTest is Test {
         assertEq(institution, institutionAdmin);
         assertEq(creditBalance, ENABLED_VOTERS_COUNT);
         assertEq(lockedTVD, uint256(ENABLED_VOTERS_COUNT) * TVD_PER_CREDIT);
-        assertEq(tvdToken.balanceOf(institutionAdmin), INSTITUTION_TVD_FUNDING - uint256(ENABLED_VOTERS_COUNT) * TVD_PER_CREDIT);
+        assertEq(
+            tvdToken.balanceOf(institutionAdmin),
+            INSTITUTION_TVD_FUNDING - uint256(ENABLED_VOTERS_COUNT) * TVD_PER_CREDIT
+        );
     }
 
     function test_createVote_success_authorizedAddress() public {

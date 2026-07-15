@@ -20,7 +20,7 @@ contract TVDEcosystemScript is Script {
         deployElectoralCredits(token, instVesting);
     }
 
-    function deployToken() public returns(address tokenAddr) {
+    function deployToken() public returns (address tokenAddr) {
         address liquidityWallet = vm.envAddress("LIQUIDITY_WALLET");
         address treasuryWallet = vm.envAddress("TREASURY_WALLET");
         address ecosystemWallet = vm.envAddress("ECOSYSTEM_WALLET");
@@ -32,13 +32,7 @@ contract TVDEcosystemScript is Script {
 
         vm.startBroadcast();
 
-        TVDToken token = new TVDToken(
-            liquidityWallet,
-            treasuryWallet,
-            ecosystemWallet,
-            tempVestingWallet,
-            adminWallet
-        );
+        TVDToken token = new TVDToken(liquidityWallet, treasuryWallet, ecosystemWallet, tempVestingWallet, adminWallet);
 
         TVDVesting vestingContract = new TVDVesting(address(token), vestingAdmin);
         vm.stopBroadcast();
@@ -57,12 +51,7 @@ contract TVDEcosystemScript is Script {
 
         vm.startBroadcast();
 
-        TVDInstitutionalVesting instVesting = new TVDInstitutionalVesting(
-            tokenAddr,
-            admin,
-            operator,
-            block.timestamp
-        );
+        TVDInstitutionalVesting instVesting = new TVDInstitutionalVesting(tokenAddr, admin, operator, block.timestamp);
 
         vm.stopBroadcast();
 
@@ -70,7 +59,7 @@ contract TVDEcosystemScript is Script {
         console.log("TVDInstitutionalVesting contract deployed at:", instVestingAddr, "With sender", msg.sender);
     }
 
-    function deployElectoralCredits(address token, address institutionalVesting) public returns(address creditsAddr) {
+    function deployElectoralCredits(address token, address institutionalVesting) public returns (address creditsAddr) {
         address admin = vm.envAddress("ELECTORAL_CREDITS_ADMIN");
         uint256 adminPrivKey = vm.envUint("ELECTORAL_CREDITS_ADMIN_PK");
         uint256 tvdPerCredit = vm.envUint("TVD_PER_CREDIT");

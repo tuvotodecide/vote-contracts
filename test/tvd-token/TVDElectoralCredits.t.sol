@@ -22,6 +22,7 @@ contract TVDElectoralCreditsTest is Test {
     address public stranger = makeAddr("stranger");
 
     uint256 constant RATE = 1e18; // 1 TVD per credit
+    uint256 constant ELECTION_ID = 1;
 
     function setUp() public {
         token = new TVDToken(liquidity, treasury, ecosystem, vestingAddr, admin);
@@ -82,21 +83,22 @@ contract TVDElectoralCreditsTest is Test {
     function test_topUp_pullsFromWallet() public {
         uint256 balBefore = token.balanceOf(institution);
 
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         assertEq(token.balanceOf(institution), balBefore - 5 * RATE);
         assertEq(token.balanceOf(address(credits)), 5 * RATE);
     }
 
     function test_topUp_updatesInstitutionState() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.prank(credits.owner());
-        (uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD, address vestingSource) =
-            credits.getInstitution(institution);
+        (address inst, uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD, address vestingSource) =
+            credits.getInstitution(ELECTION_ID);
 
+        assertEq(inst, institution);
         assertEq(creditBalance, 5);
         assertEq(lockedTVD, 5 * RATE);
         assertEq(pendingTVD, 0);
@@ -104,37 +106,63 @@ contract TVDElectoralCreditsTest is Test {
     }
 
     function test_topUp_accumulatesAcrossCalls() public {
-        vm.startPrank(institution);
-        credits.topUp(3);
-        credits.topUp(2);
+        vm.startPrank(operator);
+        credits.topUp(institution, ELECTION_ID, 3);
+        credits.topUp(institution, ELECTION_ID, 2);
         vm.stopPrank();
 
         vm.prank(credits.owner());
-        (uint256 creditBalance, uint256 lockedTVD,,) = credits.getInstitution(institution);
+        (, uint256 creditBalance, uint256 lockedTVD,,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 5);
         assertEq(lockedTVD, 5 * RATE);
     }
 
     function test_topUp_emitsEvent() public {
         vm.expectEmit(true, false, false, true);
-        emit TVDElectoralCredits.TopUp(institution, 5, 5 * RATE);
-        vm.prank(institution);
-        credits.topUp(5);
+        emit TVDElectoralCredits.TopUp(institution, ELECTION_ID, 5, 5 * RATE);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
     }
 
     function test_topUp_revertsZeroCredits() public {
-        vm.prank(institution);
+        vm.prank(operator);
         vm.expectRevert("TVDCredits: credits must be > 0");
-        credits.topUp(0);
+        credits.topUp(institution, ELECTION_ID, 0);
+    }
+
+    function test_topUp_revertsZeroInstitution() public {
+        vm.prank(operator);
+        vm.expectRevert("TVDCredits: invalid institution");
+        credits.topUp(address(0), ELECTION_ID, 5);
+    }
+
+    function test_topUp_revertsInstitutionMismatch() public {
+        vm.prank(treasury);
+        token.transfer(institution2, 1_000e18);
+        vm.prank(institution2);
+        token.approve(address(credits), type(uint256).max);
+
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
+
+        vm.prank(operator);
+        vm.expectRevert("TVDCredits: institution mismatch");
+        credits.topUp(institution2, ELECTION_ID, 5);
     }
 
     function test_topUp_revertsWithoutApproval() public {
         vm.prank(treasury);
         token.transfer(institution2, 1_000e18);
 
-        vm.prank(institution2);
+        vm.prank(operator);
         vm.expectRevert();
-        credits.topUp(5);
+        credits.topUp(institution2, ELECTION_ID, 5);
+    }
+
+    function test_topUp_revertsNotOperator() public {
+        vm.prank(stranger);
+        vm.expectRevert("TVDCredits: caller is not an authorized operator");
+        credits.topUp(institution, ELECTION_ID, 5);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -142,98 +170,104 @@ contract TVDElectoralCreditsTest is Test {
     // ──────────────────────────────────────────────────────────────────
 
     function test_consumeVote_decrementsCredit() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         vm.prank(credits.owner());
-        (uint256 creditBalance,,,) = credits.getInstitution(institution);
+        (, uint256 creditBalance,,,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 4);
     }
 
     function test_consumeVote_movesLockedToPending() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         vm.prank(credits.owner());
-        (, uint256 lockedTVD, uint256 pendingTVD,) = credits.getInstitution(institution);
+        (,, uint256 lockedTVD, uint256 pendingTVD,) = credits.getInstitution(ELECTION_ID);
         assertEq(lockedTVD, 4 * RATE);
         assertEq(pendingTVD, RATE);
     }
 
     function test_consumeVote_noTokensLeaveContract() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         uint256 balBefore = token.balanceOf(address(credits));
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         assertEq(token.balanceOf(address(credits)), balBefore);
     }
 
     function test_consumeVote_emitsEvent() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.expectEmit(true, true, false, true);
-        emit TVDElectoralCredits.VoteConsumed(institution, RATE);
+        emit TVDElectoralCredits.VoteConsumed(institution, ELECTION_ID, RATE);
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
     }
 
     function test_consumeVote_multipleVotesAccumulatePending() public {
-        vm.prank(institution);
-        credits.topUp(4);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 4);
 
         vm.startPrank(operator);
-        credits.consumeVote(institution);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
+        credits.consumeVote(ELECTION_ID);
         vm.stopPrank();
 
         vm.prank(credits.owner());
-        (uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD,) = credits.getInstitution(institution);
+        (, uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 2);
         assertEq(lockedTVD, 2 * RATE);
         assertEq(pendingTVD, 2 * RATE);
     }
 
     function test_consumeVote_ownerCanCallWithoutBeingSetAsOperator() public {
-        vm.prank(institution);
-        credits.topUp(1);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 1);
 
         vm.prank(admin);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         vm.prank(credits.owner());
-        (uint256 creditBalance,,,) = credits.getInstitution(institution);
+        (, uint256 creditBalance,,,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 0);
     }
 
     function test_consumeVote_revertsNotOperator() public {
-        vm.prank(institution);
-        credits.topUp(1);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 1);
 
         vm.prank(stranger);
         vm.expectRevert("TVDCredits: caller is not an authorized operator");
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
     }
 
-    function test_consumeVote_revertsZeroInstitution() public {
+    function test_consumeVote_revertsUninitializedElection() public {
         vm.prank(operator);
         vm.expectRevert("TVDCredits: invalid institution");
-        credits.consumeVote(address(0));
+        credits.consumeVote(ELECTION_ID);
     }
 
     function test_consumeVote_revertsNoCredits() public {
         vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
+
+        vm.prank(operator);
+        credits.liquidate(ELECTION_ID);
+
+        vm.prank(operator);
         vm.expectRevert("TVDCredits: institution has no credits");
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -241,62 +275,62 @@ contract TVDElectoralCreditsTest is Test {
     // ──────────────────────────────────────────────────────────────────
 
     function test_liquidate_burnsDefaultTenPercentOfPending() public {
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.prank(operator);
-        credits.consumeVote(institution); // pending = 1 TVD
+        credits.consumeVote(ELECTION_ID); // pending = 1 TVD
 
         uint256 supplyBefore = token.totalSupply();
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         assertEq(token.totalSupply(), supplyBefore - (RATE * 1_000) / 10_000);
     }
 
     function test_liquidate_sendsRemainderToPlatformWallet() public {
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.prank(operator);
-        credits.consumeVote(institution); // pending = 1 TVD
+        credits.consumeVote(ELECTION_ID); // pending = 1 TVD
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         uint256 expectedToPlatform = RATE - (RATE * 1_000) / 10_000;
         assertEq(token.balanceOf(platformWallet), expectedToPlatform);
     }
 
     function test_liquidate_refundsUnusedCreditsToInstitution() public {
-        vm.prank(institution);
-        credits.topUp(10); // locks 10 TVD
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10); // locks 10 TVD
 
         vm.prank(operator);
-        credits.consumeVote(institution); // 1 credit consumed, 9 remain locked
+        credits.consumeVote(ELECTION_ID); // 1 credit consumed, 9 remain locked
 
         uint256 balBefore = token.balanceOf(institution);
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         assertEq(token.balanceOf(institution), balBefore + 9 * RATE);
     }
 
     function test_liquidate_resetsInstitutionState() public {
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         vm.prank(credits.owner());
-        (uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD, address vestingSource) =
-            credits.getInstitution(institution);
+        (, uint256 creditBalance, uint256 lockedTVD, uint256 pendingTVD, address vestingSource) =
+            credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 0);
         assertEq(lockedTVD, 0);
         assertEq(pendingTVD, 0);
@@ -304,102 +338,108 @@ contract TVDElectoralCreditsTest is Test {
     }
 
     function test_liquidate_emitsEvent() public {
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         uint256 toBurn = (RATE * 1_000) / 10_000;
         uint256 toPlatform = RATE - toBurn;
         uint256 refund = 9 * RATE;
 
         vm.expectEmit(true, false, false, true);
-        emit TVDElectoralCredits.Liquidated(institution, toPlatform, toBurn, refund);
+        emit TVDElectoralCredits.Liquidated(institution, ELECTION_ID, toPlatform, toBurn, refund);
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
     }
 
     function test_liquidate_withCustomBurnBps() public {
         vm.prank(admin);
         credits.setBurnBps(5_000); // 50%
 
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.prank(operator);
-        credits.consumeVote(institution); // pending = 1 TVD
+        credits.consumeVote(ELECTION_ID); // pending = 1 TVD
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         assertEq(token.balanceOf(platformWallet), RATE / 2);
     }
 
     function test_liquidate_allowsRolloverWithoutLiquidating() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         // No liquidation yet — remaining 4 credits still usable in a future election.
         vm.prank(credits.owner());
-        (uint256 creditBalance,,,) = credits.getInstitution(institution);
+        (, uint256 creditBalance,,,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 4);
 
         vm.prank(operator);
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
 
         vm.prank(credits.owner());
-        (creditBalance,,,) = credits.getInstitution(institution);
+        (, creditBalance,,,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 3);
     }
 
     function test_liquidate_worksWithOnlyRefundNoPending() public {
-        vm.prank(institution);
-        credits.topUp(5); // no votes consumed — pending stays 0, refund = 5 TVD
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5); // no votes consumed — pending stays 0, refund = 5 TVD
 
         uint256 balBefore = token.balanceOf(institution);
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         assertEq(token.balanceOf(institution), balBefore + 5 * RATE);
     }
 
     function test_liquidate_revertsNothingToLiquidate() public {
         vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
+
+        vm.prank(operator);
+        credits.liquidate(ELECTION_ID);
+
+        vm.prank(operator);
         vm.expectRevert("TVDCredits: nothing to liquidate");
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
     }
 
-    function test_liquidate_revertsZeroInstitution() public {
+    function test_liquidate_revertsUninitializedElection() public {
         vm.prank(operator);
         vm.expectRevert("TVDCredits: invalid institution");
-        credits.liquidate(address(0));
+        credits.liquidate(ELECTION_ID);
     }
 
     function test_liquidate_revertsNotOperator() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.prank(stranger);
         vm.expectRevert("TVDCredits: caller is not an authorized operator");
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
     }
 
     function test_liquidate_thenTopUpAgainStartsFresh() public {
-        vm.prank(institution);
-        credits.topUp(5);
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.topUp(institution, ELECTION_ID, 5);
+        vm.prank(operator);
+        credits.liquidate(ELECTION_ID);
 
-        vm.prank(institution);
-        credits.topUp(3);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 3);
 
         vm.prank(credits.owner());
-        (uint256 creditBalance, uint256 lockedTVD,,) = credits.getInstitution(institution);
+        (, uint256 creditBalance, uint256 lockedTVD,,) = credits.getInstitution(ELECTION_ID);
         assertEq(creditBalance, 3);
         assertEq(lockedTVD, 3 * RATE);
     }
@@ -427,14 +467,14 @@ contract TVDElectoralCreditsTest is Test {
 
         uint256 walletBalBefore = token.balanceOf(institution);
 
-        vm.prank(institution);
-        credits.topUp(10); // needs 10 TVD, provider has 50 assigned
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10); // needs 10 TVD, provider has 50 assigned
 
         assertEq(token.balanceOf(institution), walletBalBefore); // wallet untouched
         assertEq(provider.assignedBalance(institution), 40e18);
 
         vm.prank(credits.owner());
-        (,,, address vestingSource) = credits.getInstitution(institution);
+        (,,,, address vestingSource) = credits.getInstitution(ELECTION_ID);
         assertEq(vestingSource, address(provider));
     }
 
@@ -448,14 +488,14 @@ contract TVDElectoralCreditsTest is Test {
 
         uint256 walletBalBefore = token.balanceOf(institution);
 
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         assertEq(token.balanceOf(institution), walletBalBefore - 10 * RATE);
         assertEq(provider.assignedBalance(institution), 3e18); // untouched
 
         vm.prank(credits.owner());
-        (,,, address vestingSource) = credits.getInstitution(institution);
+        (,,,, address vestingSource) = credits.getInstitution(ELECTION_ID);
         assertEq(vestingSource, address(0));
     }
 
@@ -470,11 +510,11 @@ contract TVDElectoralCreditsTest is Test {
         credits.addVestingProvider(address(providerB));
         vm.stopPrank();
 
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.prank(credits.owner());
-        (,,, address vestingSource) = credits.getInstitution(institution);
+        (,,,, address vestingSource) = credits.getInstitution(ELECTION_ID);
         assertEq(vestingSource, address(providerB));
         assertEq(providerA.assignedBalance(institution), 2e18); // untouched
         assertEq(providerB.assignedBalance(institution), 40e18);
@@ -487,14 +527,14 @@ contract TVDElectoralCreditsTest is Test {
         vm.prank(admin);
         credits.addVestingProvider(address(provider));
 
-        vm.prank(institution);
-        credits.topUp(10); // fully funded by provider; 10 TVD locked
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10); // fully funded by provider; 10 TVD locked
 
         vm.prank(operator);
-        credits.consumeVote(institution); // 1 credit consumed, 9 TVD remain locked
+        credits.consumeVote(ELECTION_ID); // 1 credit consumed, 9 TVD remain locked
 
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
 
         // Refund of the unused 9 TVD is routed back to the provider, not the institution wallet.
         assertEq(provider.assignedBalance(institution), 40e18 + 9e18);
@@ -507,13 +547,13 @@ contract TVDElectoralCreditsTest is Test {
         vm.prank(admin);
         credits.addVestingProvider(address(provider));
 
-        vm.prank(institution);
-        credits.topUp(10);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10);
 
         vm.expectEmit(true, false, false, true);
         emit TVDInstitutionalVesting.TokensRefunded(institution, 10e18);
         vm.prank(operator);
-        credits.liquidate(institution);
+        credits.liquidate(ELECTION_ID);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -543,12 +583,12 @@ contract TVDElectoralCreditsTest is Test {
         vm.prank(admin);
         credits.setOperator(operator, false);
 
-        vm.prank(institution);
-        credits.topUp(1);
+        vm.prank(admin);
+        credits.topUp(institution, ELECTION_ID, 1);
 
         vm.prank(operator);
         vm.expectRevert("TVDCredits: caller is not an authorized operator");
-        credits.consumeVote(institution);
+        credits.consumeVote(ELECTION_ID);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -591,17 +631,17 @@ contract TVDElectoralCreditsTest is Test {
     }
 
     function test_setTvdPerCredit_onlyAffectsFutureTopUps() public {
-        vm.prank(institution);
-        credits.topUp(5); // locked at old rate
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5); // locked at old rate
 
         vm.prank(admin);
         credits.setTvdPerCredit(2e18);
 
-        vm.prank(institution);
-        credits.topUp(5); // locked at new rate
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5); // locked at new rate
 
         vm.prank(credits.owner());
-        (, uint256 lockedTVD,,) = credits.getInstitution(institution);
+        (,, uint256 lockedTVD,,) = credits.getInstitution(ELECTION_ID);
         assertEq(lockedTVD, 5 * RATE + 5 * 2e18);
     }
 
@@ -711,8 +751,8 @@ contract TVDElectoralCreditsTest is Test {
     }
 
     function test_recoverDust_revertsNotOwner() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.prank(stranger);
         vm.expectRevert();
@@ -720,8 +760,8 @@ contract TVDElectoralCreditsTest is Test {
     }
 
     function test_recoverDust_emitsEvent() public {
-        vm.prank(institution);
-        credits.topUp(5);
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 5);
 
         vm.expectEmit(false, false, false, true);
         emit TVDElectoralCredits.DustRecovered(5 * RATE);
@@ -736,15 +776,15 @@ contract TVDElectoralCreditsTest is Test {
     ///      topUp()'s accounting inconsistent with the contract's real balance.
     ///      This test documents the current behaviour.
     function test_recoverDust_currentlyDrainsActiveLockedTVD() public {
-        vm.prank(institution);
-        credits.topUp(10); // 10 TVD locked and still backing active credits
+        vm.prank(operator);
+        credits.topUp(institution, ELECTION_ID, 10); // 10 TVD locked and still backing active credits
 
         vm.prank(admin);
         credits.recoverDust();
 
         assertEq(token.balanceOf(address(credits)), 0);
         vm.prank(credits.owner());
-        (, uint256 lockedTVD,,) = credits.getInstitution(institution);
+        (,, uint256 lockedTVD,,) = credits.getInstitution(ELECTION_ID);
         assertEq(lockedTVD, 10 * RATE); // accounting still claims 10 TVD is locked…
         assertEq(token.balanceOf(address(credits)), 0); // …but no tokens remain to back it
     }

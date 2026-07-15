@@ -12,9 +12,15 @@ contract BackVoteManagerScript is Script {
         vm.startBroadcast();
 
         address caller = address(0x2Df3821cf770C501aaAB5F8F2e30C55c7e249010);
+        address creditsContract = vm.envAddress("TVD_ELECTORAL_CREDITS");
+        address voteRewardClaimVerifier = vm.envAddress("VOTE_REWARD_CLAIM_VERIFIER");
+        address tvdToken = vm.envAddress("TVD_TOKEN");
 
         address voteProxy = Upgrades.deployUUPSProxy(
-            "BackVoteManager.sol", abi.encodeCall(BackVoteManager.initialize, (msg.sender, caller))
+            "BackVoteManager.sol",
+            abi.encodeCall(
+                BackVoteManager.initialize, (msg.sender, caller, creditsContract, voteRewardClaimVerifier, tvdToken)
+            )
         );
 
         vm.stopBroadcast();

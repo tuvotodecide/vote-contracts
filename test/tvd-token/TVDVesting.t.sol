@@ -18,6 +18,7 @@ contract TVDVestingTest is Test {
     address public stranger = makeAddr("stranger");
 
     uint256 constant VESTING_POOL = 3_150_000e18;
+    uint256 public lockupEnd;
 
     // Default schedule matching the whitepaper
     uint64 constant CLIFF = 365 days;
@@ -26,14 +27,16 @@ contract TVDVestingTest is Test {
     function setUp() public {
         // Deploy token with treasury absorbing the vesting allocation temporarily.
         // (vestingContract param must be non-zero; treasury acts as placeholder.)
-        token = new TVDToken(liquidity, treasury, ecosystem, treasury, admin);
+        lockupEnd = block.timestamp + 30 days;
+        token = new TVDToken(lockupEnd, liquidity, treasury, ecosystem, treasury, admin);
 
         // Deploy real vesting contract now that we have the token address.
         vesting = new TVDVesting(address(token), admin);
 
         // Move the vesting pool from treasury into the vesting contract.
         vm.prank(treasury);
-        token.transfer(address(vesting), VESTING_POOL);
+        bool success = token.transfer(address(vesting), VESTING_POOL);
+        assertTrue(success);
     }
 
     // ──────────────────────────────────────────────────────────────────

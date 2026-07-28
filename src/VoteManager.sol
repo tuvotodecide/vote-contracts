@@ -5,18 +5,19 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {TVDElectoralCredits} from "./tvd-token/TVDElectoralCredits.sol";
 import {TVDToken} from "./tvd-token/TVDToken.sol";
-import {VoteRewardClaimVerifier} from "./circuits/VoteRewardClaimVerifier.sol";
 
-/// @title BackVoteManager
-/// @notice Registers institutions and their votes, records anonymous vote casts backed by
-/// zero-knowledge proofs, and pays out TVD token rewards for eligible votes.
+/// @title VoteManager
+/// @notice Registers institutions and their votes, records anonymous vote casts, and pays out
+/// TVD token rewards for eligible votes.
 /// @dev Upgradeable (UUPS) contract. Institutions are permissioned entities that create and
-/// manage their own votes; a single `authorizedCaller` relays vote casts on behalf of voters
-/// after verifying the ZK proof of eligibility, keeping voter identities off-chain/anonymous.
-contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgradeable, UUPSUpgradeable {
+/// manage their own votes; a single `authorizedCaller` relays vote casts on behalf of voters,
+/// keeping voter identities off-chain/anonymous.
+contract VoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgradeable, UUPSUpgradeable {
     /// @notice Stores all data for a single vote event.
     /// @dev Mapping fields cannot be copied or deleted; disabling a vote is done via `voteStates`
     /// rather than clearing this struct.
@@ -34,9 +35,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         /// @notice Number of voters enabled/allotted for this vote (used to top up credits).
         uint48 totalVotersCount;
         /// @notice Merkle root(s) of the set of voters enabled to participate.
-        bytes32[] totalVoters;
-        /// @notice Merkle root of the currently registered voters, checked by the ZK proof.
-        uint256 registeredVoters;
+        uint256 totalVoters;
         /// @notice Ordered list of selectable option ids.
         string[] options;
         /// @notice Quick lookup of whether a given option id is valid for this vote.
@@ -45,8 +44,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         mapping(string => uint256) votes;
         /// @notice Maps a spent nullifier to the option it voted for; used to block double voting.
         mapping(uint256 => string) nullifiers;
-        /// @notice Marks a reward hash as eligible for a reward claim.
-        mapping(uint256 => bool) canBeRewarded;
         /// @notice Marks a reward hash as already claimed, preventing double claims.
         mapping(uint256 => bool) alreadyRewarded;
     }
@@ -61,7 +58,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         mapping(address => bool) authorizedAddresses;
     }
 
-    /// @notice Sole address allowed to cast votes and update registered-voter roots on behalf of voters.
+    /// @notice Sole address allowed to cast votes on behalf of voters.
     address private authorizedCaller;
     /// @notice All votes ever created, keyed by vote id.
     mapping(uint256 => Vote) private votes;
@@ -72,13 +69,11 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
 
     /// @notice Electoral credits contract used to top up and consume per-vote voting credits.
     TVDElectoralCredits private creditsContract;
-    /// @notice Groth16 verifier used to validate vote-cast/reward-claim ZK proofs.
-    VoteRewardClaimVerifier private voteRewardClaimVerifier;
     /// @notice ERC20 token distributed as a reward for eligible votes.
     TVDToken private tvdToken;
 
     /// @notice Amount of `tvdToken` paid out per eligible reward claim.
-    uint256 public rewardByVote;
+    uint256 public tvdPerVote;
 
     /// @notice Reverts unless `startDate < endDate < resultsDate`.
     modifier validVoteDates(uint48 startDate, uint48 endDate, uint48 resultsDate) {
@@ -95,6 +90,12 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @notice Reverts unless the vote with the given `id` has not been disabled.
     modifier activeVote(uint256 id) {
         _activeVote(id);
+        _;
+    }
+
+    /// @notice Reverts unless the vote with the given `id` has passed its end date.
+    modifier voteEnded(uint256 id) {
+        _voteEnded(id);
         _;
     }
 
@@ -133,7 +134,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @notice Emitted when an institution's admin address is changed.
     event InstitutionAdminChanged(string indexed id, address newAdmin);
     /// @notice Emitted when a vote reward is successfully claimed.
-    event Rewarded(uint256 indexed id);
+    event Rewarded(uint256 indexed id, address indexed recipient);
 
     /// @notice Disables initializers on the implementation contract so it cannot be initialized directly.
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -144,21 +145,16 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @notice Initializes the proxy, setting the owner, authorized caller, and dependent contracts.
     /// @dev Replaces the constructor for upgradeable contracts; can only run once.
     /// @param initialOwner Address granted contract ownership (upgrade/admin rights).
-    /// @param _authorizedCaller Address allowed to cast votes and update registered-voter roots.
+    /// @param _authorizedCaller Address allowed to cast votes on behalf of voters.
     /// @param _creditsContract Address of the TVDElectoralCredits contract.
-    /// @param _voteRewardClaimVerifier Address of the ZK proof verifier for vote casts/reward claims.
     /// @param _tvdToken Address of the TVD ERC20 token used for rewards.
-    function initialize(
-        address initialOwner,
-        address _authorizedCaller,
-        address _creditsContract,
-        address _voteRewardClaimVerifier,
-        address _tvdToken
-    ) public initializer {
+    function initialize(address initialOwner, address _authorizedCaller, address _creditsContract, address _tvdToken)
+        public
+        initializer
+    {
         __Ownable_init(initialOwner);
         authorizedCaller = _authorizedCaller;
         creditsContract = TVDElectoralCredits(_creditsContract);
-        voteRewardClaimVerifier = VoteRewardClaimVerifier(_voteRewardClaimVerifier);
         tvdToken = TVDToken(_tvdToken);
     }
 
@@ -180,6 +176,11 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @notice Checks that a vote has not been disabled.
     function _activeVote(uint256 id) internal view {
         require(voteStates[id] == 0, "Vote is not active");
+    }
+
+    /// @notice Checks that a vote's end date has passed.
+    function _voteEnded(uint256 id) internal view {
+        require(block.timestamp > votes[id].endDate, "Vote has not ended yet");
     }
 
     /// @notice Checks that the caller is the configured authorized caller.
@@ -207,22 +208,29 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         );
     }
 
-    /// @notice Sets the address allowed to cast votes and update registered-voter roots.
+    /// @notice Sets the address allowed to cast votes on behalf of voters.
     /// @param newCaller New authorized caller address.
     function setAuthorizedCaller(address newCaller) external onlyOwner {
         authorizedCaller = newCaller;
     }
 
     /// @notice Returns the current authorized caller address.
-    /// @return The address allowed to cast votes and update registered-voter roots.
+    /// @return The address allowed to cast votes on behalf of voters.
     function getAuthorizedCaller() public view onlyOwner returns (address) {
         return authorizedCaller;
     }
 
+    /// @notice Updates the TVDElectoralCredits contract used to top up and consume voting credits.
+    /// @param newCreditsContract Address of the new TVDElectoralCredits contract.
+    function setCreditsContract(address newCreditsContract) external onlyOwner {
+        require(newCreditsContract != address(0), "Credits contract cannot be zero address");
+        creditsContract = TVDElectoralCredits(newCreditsContract);
+    }
+
     /// @notice Sets the TVD token amount paid out per eligible vote reward claim.
-    /// @param newReward New reward amount, in `tvdToken` units.
-    function setRewardByVote(uint256 newReward) public onlyOwner {
-        rewardByVote = newReward;
+    /// @param newTvdPerVote New reward amount, in `tvdToken` units.
+    function setTvdPerVote(uint256 newTvdPerVote) external onlyOwner {
+        tvdPerVote = newTvdPerVote;
     }
 
     /// @notice Creates a new institution with the given id and admin.
@@ -320,7 +328,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @param resultsDate Timestamp from which results become publicly queryable.
     /// @param enabledVotersCount Number of voters enabled to participate; used to top up credits.
     /// @param enabledVotersMkRoot Merkle root(s) of the set of voters enabled to participate.
-    /// @param registeredVotersMkRoot Merkle root of the registered voters set, checked by the ZK proof at cast time.
     /// @param options List of selectable option ids; must be non-empty.
     function createVote(
         uint256 id,
@@ -330,8 +337,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         uint48 endDate,
         uint48 resultsDate,
         uint48 enabledVotersCount,
-        bytes32[] memory enabledVotersMkRoot,
-        uint256 registeredVotersMkRoot,
+        uint256 enabledVotersMkRoot,
         string[] memory options
     ) external validVoteDates(startDate, endDate, resultsDate) onlyAuthorizedInInstitution(institutionId) {
         require(bytes(name).length > 0, "Vote name cannot be empty");
@@ -345,7 +351,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         votes[id].resultsDate = resultsDate;
         votes[id].totalVotersCount = enabledVotersCount;
         votes[id].totalVoters = enabledVotersMkRoot;
-        votes[id].registeredVoters = registeredVotersMkRoot;
         votes[id].options = options;
         for (uint256 i = 0; i < options.length; i++) {
             votes[id].existingOptions[options[i]] = true;
@@ -376,14 +381,6 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         votes[id].resultsDate = resultsDate;
     }
 
-    /// @notice Updates the Merkle root of registered voters for a vote.
-    /// @dev Only callable by the authorized caller, typically as voters register over time.
-    /// @param id Id of the vote to update.
-    /// @param newRoot New Merkle root of registered voters.
-    function updateRegisteredVoters(uint256 id, uint256 newRoot) external existingVote(id) onlyAuthorizedCaller {
-        votes[id].registeredVoters = newRoot;
-    }
-
     /// @notice Disables an active vote, preventing further casts.
     /// @dev Only callable by the owning institution's admin or an authorized address. Irreversible.
     /// @param id Id of the vote to disable.
@@ -391,59 +388,53 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         voteStates[id] = 1;
     }
 
-    /// @notice Casts an anonymous vote for a given option, verified via a ZK proof of eligibility.
+    /// @notice Casts an anonymous vote for a given option.
     /// @dev Only callable by the authorized caller, which relays votes on behalf of voters so their
     /// identity is not exposed on-chain. Reverts if the vote is not currently open, the option is
-    /// invalid, the nullifier was already used, or the proof fails verification. Consumes one
-    /// voting credit and marks `rewardHash` as eligible for a reward claim.
+    /// invalid, or the nullifier was already used. Consumes one voting credit.
     /// @param optionId Id of the option being voted for; must be one of the vote's registered options.
     /// @param voteId Id of the vote being cast in.
     /// @param voteNullifier Unique nullifier for this voter/vote pair, preventing double voting.
-    /// @param rewardHash Hash identifying the reward claim this vote makes eligible.
-    /// @param pA Groth16 proof component A.
-    /// @param pB Groth16 proof component B.
-    /// @param pC Groth16 proof component C.
-    function castVote(
-        string calldata optionId,
-        uint256 voteId,
-        uint256 voteNullifier,
-        uint256 rewardHash,
-        uint256[2] calldata pA,
-        uint256[2][2] calldata pB,
-        uint256[2] calldata pC
-    ) external nonReentrant existingVote(voteId) activeVote(voteId) onlyAuthorizedCaller {
+    function castVote(string calldata optionId, uint256 voteId, uint256 voteNullifier)
+        external
+        nonReentrant
+        existingVote(voteId)
+        activeVote(voteId)
+        onlyAuthorizedCaller
+    {
         Vote storage vote = votes[voteId];
         require(block.timestamp >= vote.startDate && block.timestamp <= vote.endDate, "Voting is not active");
         require(vote.existingOptions[optionId], "Invalid option");
         require(bytes(vote.nullifiers[voteNullifier]).length == 0, "Nullifier already used");
 
-        uint256[4] memory pubSignals = [voteId, vote.registeredVoters, voteNullifier, rewardHash];
-        require(voteRewardClaimVerifier.verifyProof(pA, pB, pC, pubSignals), "Invalid proof");
-
         vote.votes[optionId]++;
         vote.nullifiers[voteNullifier] = optionId;
-        vote.canBeRewarded[rewardHash] = true;
         creditsContract.consumeVote(voteId);
 
         emit Voted(voteId);
     }
 
-    /// @notice Claims the TVD token reward for a vote previously cast with a matching reward hash.
-    /// @dev Callable by anyone holding a valid `claimNullifier` obtained off-chain from a prior
-    /// `castVote` call; the reward hash's anonymity is what allows the claimant to differ from
-    /// the address that relayed the vote. Reverts if rewards are disabled, the nullifier isn't
-    /// eligible, or it was already claimed.
-    /// @param id Id of the vote being claimed against.
-    /// @param claimNullifier Reward hash (nullifier) marked eligible during `castVote`.
-    function claimVoteReward(uint256 id, uint256 claimNullifier) external nonReentrant existingVote(id) {
-        Vote storage vote = votes[id];
-        require(rewardByVote > 0, "No rewards enabled");
-        require(vote.canBeRewarded[claimNullifier], "Can't be rewarded");
-        require(!vote.alreadyRewarded[claimNullifier], "Already rewarded");
+    /// @notice Claims the TVD token reward for a vote, on behalf of a voter identified by `rewardHash`.
+    /// @dev Only callable by the authorized caller, and only once the vote's end date has passed.
+    /// @param voteId Id of the vote being claimed against.
+    /// @param rewardHash Hash identifying the reward claim; used to prevent double claims.
+    /// @param recipient Address to receive the reward.
+    function claimVoteReward(uint256 voteId, uint256 rewardHash, address recipient)
+        external
+        nonReentrant
+        existingVote(voteId)
+        voteEnded(voteId)
+        onlyAuthorizedCaller
+    {
+        Vote storage vote = votes[voteId];
+        require(!vote.alreadyRewarded[rewardHash], "Already rewarded");
+        require(tvdToken.balanceOf(address(this)) >= tvdPerVote, "Insufficient contract balance");
 
-        vote.alreadyRewarded[claimNullifier] = true;
-        tvdToken.transfer(msg.sender, rewardByVote);
-        emit Rewarded(id);
+        vote.alreadyRewarded[rewardHash] = true;
+        tvdToken.setApplyLockup(recipient, true);
+        bool success = tvdToken.transfer(recipient, tvdPerVote);
+        require(success, "Reward transfer failed");
+        emit Rewarded(voteId, recipient);
     }
 
     /// @notice Returns the final tally of votes per option for a finished vote.
@@ -475,6 +466,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
     /// @return endDate Timestamp after which votes may no longer be cast.
     /// @return resultsDate Timestamp from which results become publicly queryable.
     /// @return totalVoters Number of voters enabled to participate.
+    /// @return totalVotersMkRoot Merkle root of total voters.
     /// @return options List of selectable option ids.
     function getVoteInfo(uint256 voteId)
         external
@@ -486,6 +478,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
             uint48 endDate,
             uint48 resultsDate,
             uint48 totalVoters,
+            uint256 totalVotersMkRoot,
             string[] memory options
         )
     {
@@ -495,6 +488,7 @@ contract BackVoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgr
         endDate = vote.endDate;
         resultsDate = vote.resultsDate;
         totalVoters = vote.totalVotersCount;
+        totalVotersMkRoot = vote.totalVoters;
         options = vote.options;
     }
 

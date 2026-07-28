@@ -2,35 +2,15 @@
 pragma solidity ^0.8.13;
 
 import {Test} from "forge-std/Test.sol";
-import {BackVoteManager} from "../src/BackVoteManager.sol";
+import {VoteManager} from "../src/VoteManager.sol";
 import {TVDToken} from "../src/tvd-token/TVDToken.sol";
 import {TVDElectoralCredits} from "../src/tvd-token/TVDElectoralCredits.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-/// @dev Stand-in for VoteRewardClaimVerifier so tests don't need real Groth16 proofs.
-/// BackVoteManager calls the verifier through a low-level-compatible selector, so any
-/// contract exposing a matching `verifyProof` works regardless of its declared type.
-contract MockVoteRewardClaimVerifier {
-    bool public result = true;
-
-    function setResult(bool _result) external {
-        result = _result;
-    }
-
-    function verifyProof(uint256[2] calldata, uint256[2][2] calldata, uint256[2] calldata, uint256[4] calldata)
-        external
-        view
-        returns (bool)
-    {
-        return result;
-    }
-}
-
-contract BackVoteManagerTest is Test {
-    BackVoteManager public manager;
+contract VoteManagerTest is Test {
+    VoteManager public manager;
     TVDToken public tvdToken;
     TVDElectoralCredits public creditsContract;
-    MockVoteRewardClaimVerifier public verifier;
 
     address public owner;
     address public nonOwner;
@@ -62,9 +42,9 @@ contract BackVoteManagerTest is Test {
     uint48 endDate;
     uint48 resultsDate;
 
-    bytes32[] enabledVotersMkRoot;
-    uint256 registeredVotersMkRoot;
+    uint256 enabledVotersMkRoot;
     string[] options;
+    uint256 public lockupEnd;
 
     function setUp() public {
         owner = address(this);
@@ -82,48 +62,56 @@ contract BackVoteManagerTest is Test {
         platformWallet = makeAddr("platformWallet");
         rewardClaimer = makeAddr("rewardClaimer");
 
-        // Real TVD token and electoral credits contract, backing vote creation and rewards.
-        tvdToken = new TVDToken(liquidityWallet, treasuryWallet, ecosystemWallet, vestingWallet, tokenAdmin);
+        // Real TVD token and electoral credits contract, backing vote creation.
+        lockupEnd = block.timestamp + 30 days;
+        tvdToken = new TVDToken(lockupEnd, liquidityWallet, treasuryWallet, ecosystemWallet, vestingWallet, tokenAdmin);
         creditsContract = new TVDElectoralCredits(address(tvdToken), owner, TVD_PER_CREDIT, platformWallet);
 
-        // Mocked ZK verifier, so castVote/claimVoteReward tests don't need real proofs.
-        verifier = new MockVoteRewardClaimVerifier();
+        bytes32 lockupManagerRole = tvdToken.LOCKUP_MANAGER_ROLE();
+        vm.prank(tokenAdmin);
+        tvdToken.grantRole(lockupManagerRole, address(creditsContract));
 
         // Deploy implementation + proxy
-        BackVoteManager impl = new BackVoteManager();
+        VoteManager impl = new VoteManager();
         bytes memory initData = abi.encodeCall(
-            BackVoteManager.initialize,
-            (owner, authorizedCaller, address(creditsContract), address(verifier), address(tvdToken))
+            VoteManager.initialize, (owner, authorizedCaller, address(creditsContract), address(tvdToken))
         );
         ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
-        manager = BackVoteManager(address(proxy));
+        manager = VoteManager(address(proxy));
 
         // Allow the manager to top up / consume credits on behalf of institutions.
         creditsContract.setOperator(address(manager), true);
 
+        // Allow the manager to flag reward claimers' lockup status on claimVoteReward.
+        vm.prank(tokenAdmin);
+        tvdToken.grantRole(lockupManagerRole, address(manager));
+
         // Fund institutions with TVD and pre-approve the credits contract for vote top-ups.
         vm.prank(treasuryWallet);
-        tvdToken.transfer(institutionAdmin, INSTITUTION_TVD_FUNDING);
+        bool success = tvdToken.transfer(institutionAdmin, INSTITUTION_TVD_FUNDING);
+        assertTrue(success);
+
         vm.prank(institutionAdmin);
         tvdToken.approve(address(creditsContract), type(uint256).max);
 
         vm.prank(treasuryWallet);
-        tvdToken.transfer(otherAddress, INSTITUTION_TVD_FUNDING);
+        success = tvdToken.transfer(otherAddress, INSTITUTION_TVD_FUNDING);
+        assertTrue(success);
+
         vm.prank(otherAddress);
         tvdToken.approve(address(creditsContract), type(uint256).max);
 
         // Fund the manager itself so it can pay out vote rewards.
         vm.prank(treasuryWallet);
-        tvdToken.transfer(address(manager), INSTITUTION_TVD_FUNDING);
+        success = tvdToken.transfer(address(manager), INSTITUTION_TVD_FUNDING);
+        assertTrue(success);
 
         // Default dates: start in 2 days, end in 4 days, results in 6 days
         startDate = uint48(block.timestamp + 2 days);
         endDate = uint48(block.timestamp + 4 days);
         resultsDate = uint48(block.timestamp + 6 days);
 
-        enabledVotersMkRoot = new bytes32[](1);
-        enabledVotersMkRoot[0] = bytes32(uint256(1));
-        registeredVotersMkRoot = 12345;
+        enabledVotersMkRoot = uint256(1);
 
         // Default options
         options = new string[](3);
@@ -149,21 +137,13 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
 
-    function _proof() internal pure returns (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) {
-        pA = [uint256(0), uint256(0)];
-        pB = [[uint256(0), uint256(0)], [uint256(0), uint256(0)]];
-        pC = [uint256(0), uint256(0)];
-    }
-
-    function _castVote(string memory optionId, uint256 nullifier, uint256 rewardHash) internal {
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
+    function _castVote(string memory optionId, uint256 nullifier) internal {
         vm.prank(authorizedCaller);
-        manager.castVote(optionId, VOTE_ID, nullifier, rewardHash, pA, pB, pC);
+        manager.castVote(optionId, VOTE_ID, nullifier);
     }
 
     // ========== Initialization ==========
@@ -178,7 +158,7 @@ contract BackVoteManagerTest is Test {
 
     function test_initialize_cannotReinitialize() public {
         vm.expectRevert();
-        manager.initialize(nonOwner, unauthorizedCaller, address(creditsContract), address(verifier), address(tvdToken));
+        manager.initialize(nonOwner, unauthorizedCaller, address(creditsContract), address(tvdToken));
     }
 
     function test_setAuthorizedCaller_success() public {
@@ -192,24 +172,24 @@ contract BackVoteManagerTest is Test {
         manager.setAuthorizedCaller(unauthorizedCaller);
     }
 
-    // ========== setRewardByVote ==========
+    // ========== setTvdPerVote ==========
 
-    function test_setRewardByVote_success() public {
-        manager.setRewardByVote(10e18);
-        assertEq(manager.rewardByVote(), 10e18);
+    function test_setTvdPerVote_success() public {
+        manager.setTvdPerVote(10e18);
+        assertEq(manager.tvdPerVote(), 10e18);
     }
 
-    function test_setRewardByVote_revert_notOwner() public {
+    function test_setTvdPerVote_revert_notOwner() public {
         vm.prank(nonOwner);
         vm.expectRevert();
-        manager.setRewardByVote(10e18);
+        manager.setTvdPerVote(10e18);
     }
 
     // ========== createInstitution ==========
 
     function test_createInstitution_success() public {
         vm.expectEmit(true, false, false, true);
-        emit BackVoteManager.InstitutionCreated(INSTITUTION_ID, institutionAdmin);
+        emit VoteManager.InstitutionCreated(INSTITUTION_ID, institutionAdmin);
 
         vm.prank(authorizedCaller);
         manager.createInstitution(INSTITUTION_ID, institutionAdmin);
@@ -251,7 +231,7 @@ contract BackVoteManagerTest is Test {
         manager.createInstitution(INSTITUTION_ID, institutionAdmin);
 
         vm.expectEmit(true, false, false, true);
-        emit BackVoteManager.InstitutionDeleted(INSTITUTION_ID);
+        emit VoteManager.InstitutionDeleted(INSTITUTION_ID);
 
         vm.prank(authorizedCaller);
         manager.deleteInstitution(INSTITUTION_ID);
@@ -348,7 +328,7 @@ contract BackVoteManagerTest is Test {
         manager.createInstitution(INSTITUTION_ID, institutionAdmin);
 
         vm.expectEmit(true, false, false, true);
-        emit BackVoteManager.InstitutionAdminChanged(INSTITUTION_ID, otherAddress);
+        emit VoteManager.InstitutionAdminChanged(INSTITUTION_ID, otherAddress);
 
         vm.prank(institutionAdmin);
         manager.changeInstitutionAdmin(INSTITUTION_ID, otherAddress);
@@ -396,18 +376,26 @@ contract BackVoteManagerTest is Test {
 
     function test_createVote_success() public {
         vm.expectEmit(true, false, false, true);
-        emit BackVoteManager.VoteCreated(VOTE_ID, VOTE_NAME);
+        emit VoteManager.VoteCreated(VOTE_ID, VOTE_NAME);
 
         _createVote();
 
-        (string memory name, uint48 sd, uint48 ed, uint48 rd, uint48 totalVoters, string[] memory opts) =
-            manager.getVoteInfo(VOTE_ID);
+        (
+            string memory name,
+            uint48 sd,
+            uint48 ed,
+            uint48 rd,
+            uint48 totalVoters,
+            uint256 totalVotersMkRoot,
+            string[] memory opts
+        ) = manager.getVoteInfo(VOTE_ID);
 
         assertEq(name, VOTE_NAME);
         assertEq(sd, startDate);
         assertEq(ed, endDate);
         assertEq(rd, resultsDate);
         assertEq(totalVoters, ENABLED_VOTERS_COUNT);
+        assertEq(totalVotersMkRoot, enabledVotersMkRoot);
         assertEq(opts.length, 3);
         assertEq(opts[0], "optionA");
         assertEq(opts[1], "optionB");
@@ -415,7 +403,7 @@ contract BackVoteManagerTest is Test {
         assertEq(manager.getVoteInstitutionId(VOTE_ID), VOTE_INSTITUTION_ID);
 
         // Credits were topped up from the institution admin's own TVD balance.
-        (address institution, uint256 creditBalance, uint256 lockedTVD,,) = creditsContract.getInstitution(VOTE_ID);
+        (address institution, uint256 creditBalance, uint256 lockedTVD,,,,,,,) = creditsContract.getElection(VOTE_ID);
         assertEq(institution, institutionAdmin);
         assertEq(creditBalance, ENABLED_VOTERS_COUNT);
         assertEq(lockedTVD, uint256(ENABLED_VOTERS_COUNT) * TVD_PER_CREDIT);
@@ -439,7 +427,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
 
@@ -458,7 +445,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
@@ -477,7 +463,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
@@ -495,7 +480,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             emptyOpts
         );
     }
@@ -512,7 +496,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
@@ -529,7 +512,6 @@ contract BackVoteManagerTest is Test {
             endDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
@@ -546,7 +528,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
@@ -563,7 +544,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }
@@ -580,7 +560,7 @@ contract BackVoteManagerTest is Test {
         vm.prank(institutionAdmin);
         manager.updateVoteDates(VOTE_ID, newStart, newEnd, newResults);
 
-        (, uint48 sd, uint48 ed, uint48 rd,,) = manager.getVoteInfo(VOTE_ID);
+        (, uint48 sd, uint48 ed, uint48 rd,,,) = manager.getVoteInfo(VOTE_ID);
         assertEq(sd, newStart);
         assertEq(ed, newEnd);
         assertEq(rd, newResults);
@@ -638,34 +618,6 @@ contract BackVoteManagerTest is Test {
         manager.updateVoteDates(VOTE_ID, newStart, newEnd, newResults);
     }
 
-    // ========== updateRegisteredVoters ==========
-
-    function test_updateRegisteredVoters_success() public {
-        _createVote();
-
-        vm.prank(authorizedCaller);
-        manager.updateRegisteredVoters(VOTE_ID, 999);
-
-        // No direct getter for registeredVoters; a subsequent cast still succeeds,
-        // confirming the vote's internal state was not corrupted by the update.
-        vm.warp(startDate);
-        _castVote("optionA", 111, 555);
-    }
-
-    function test_updateRegisteredVoters_revert_nonExistentVote() public {
-        vm.expectRevert("Vote does not exist");
-        vm.prank(authorizedCaller);
-        manager.updateRegisteredVoters(99, 999);
-    }
-
-    function test_updateRegisteredVoters_revert_notAuthorizedCaller() public {
-        _createVote();
-
-        vm.prank(unauthorizedCaller);
-        vm.expectRevert("Not authorized caller");
-        manager.updateRegisteredVoters(VOTE_ID, 999);
-    }
-
     // ========== disableVote ==========
 
     function test_disableVote_success() public {
@@ -675,10 +627,9 @@ contract BackVoteManagerTest is Test {
         manager.disableVote(VOTE_ID);
 
         vm.warp(startDate);
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Vote is not active");
         vm.prank(authorizedCaller);
-        manager.castVote("optionA", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("optionA", VOTE_ID, 111);
     }
 
     function test_disableVote_revert_notAuthorizedInInstitution() public {
@@ -706,12 +657,12 @@ contract BackVoteManagerTest is Test {
         vm.warp(startDate);
 
         vm.expectEmit(true, false, false, false);
-        emit BackVoteManager.Voted(VOTE_ID);
+        emit VoteManager.Voted(VOTE_ID);
 
-        _castVote("optionA", 111, 555);
+        _castVote("optionA", 111);
 
         // One voting credit was consumed.
-        (,, uint256 lockedTVD, uint256 pendingTVD,) = creditsContract.getInstitution(VOTE_ID);
+        (,, uint256 lockedTVD, uint256 pendingTVD,,,,,,) = creditsContract.getElection(VOTE_ID);
         assertEq(pendingTVD, TVD_PER_CREDIT);
         assertEq(lockedTVD, (uint256(ENABLED_VOTERS_COUNT) - 1) * TVD_PER_CREDIT);
     }
@@ -720,9 +671,9 @@ contract BackVoteManagerTest is Test {
         _createVote();
         vm.warp(startDate);
 
-        _castVote("optionA", 111, 555);
-        _castVote("optionB", 222, 556);
-        _castVote("optionA", 333, 557);
+        _castVote("optionA", 111);
+        _castVote("optionB", 222);
+        _castVote("optionA", 333);
 
         // Check results after results date
         vm.warp(resultsDate + 1);
@@ -735,73 +686,56 @@ contract BackVoteManagerTest is Test {
     }
 
     function test_castVote_revert_nonExistentVote() public {
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Vote does not exist");
         vm.prank(authorizedCaller);
-        manager.castVote("optionA", 99, 111, 555, pA, pB, pC);
-    }
-
-    function test_castVote_revert_invalidProof() public {
-        _createVote();
-        vm.warp(startDate);
-        verifier.setResult(false);
-
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
-        vm.expectRevert("Invalid proof");
-        vm.prank(authorizedCaller);
-        manager.castVote("optionA", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("optionA", 99, 111);
     }
 
     function test_castVote_revert_votingNotActive_tooEarly() public {
         _createVote();
 
         // Don't warp — still before startDate
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Voting is not active");
         vm.prank(authorizedCaller);
-        manager.castVote("optionA", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("optionA", VOTE_ID, 111);
     }
 
     function test_castVote_revert_votingNotActive_tooLate() public {
         _createVote();
         vm.warp(endDate + 1);
 
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Voting is not active");
         vm.prank(authorizedCaller);
-        manager.castVote("optionA", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("optionA", VOTE_ID, 111);
     }
 
     function test_castVote_revert_invalidOption() public {
         _createVote();
         vm.warp(startDate);
 
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Invalid option");
         vm.prank(authorizedCaller);
-        manager.castVote("nonExistent", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("nonExistent", VOTE_ID, 111);
     }
 
     function test_castVote_revert_nullifierAlreadyUsed() public {
         _createVote();
         vm.warp(startDate);
 
-        _castVote("optionA", 111, 555);
+        _castVote("optionA", 111);
 
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Nullifier already used");
         vm.prank(authorizedCaller);
-        manager.castVote("optionB", VOTE_ID, 111, 556, pA, pB, pC);
+        manager.castVote("optionB", VOTE_ID, 111);
     }
 
     function test_castVote_revert_notAuthorizedCaller() public {
         _createVote();
         vm.warp(startDate);
 
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Not authorized caller");
         vm.prank(unauthorizedCaller);
-        manager.castVote("optionA", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("optionA", VOTE_ID, 111);
     }
 
     function test_castVote_revert_voteDisabled() public {
@@ -810,10 +744,9 @@ contract BackVoteManagerTest is Test {
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 
-        (uint256[2] memory pA, uint256[2][2] memory pB, uint256[2] memory pC) = _proof();
         vm.expectRevert("Vote is not active");
         vm.prank(authorizedCaller);
-        manager.castVote("optionA", VOTE_ID, 111, 555, pA, pB, pC);
+        manager.castVote("optionA", VOTE_ID, 111);
     }
 
     // ========== getVoteResults ==========
@@ -865,14 +798,22 @@ contract BackVoteManagerTest is Test {
         manager.disableVote(VOTE_ID);
         vm.stopPrank();
 
-        (string memory name, uint48 sd, uint48 ed, uint48 rd, uint48 totalVoters, string[] memory opts) =
-            manager.getVoteInfo(VOTE_ID);
+        (
+            string memory name,
+            uint48 sd,
+            uint48 ed,
+            uint48 rd,
+            uint48 totalVoters,
+            uint256 totalVotersMkRoot,
+            string[] memory opts
+        ) = manager.getVoteInfo(VOTE_ID);
 
         assertEq(name, VOTE_NAME);
         assertEq(sd, startDate);
         assertEq(ed, endDate);
         assertEq(rd, resultsDate);
         assertEq(totalVoters, ENABLED_VOTERS_COUNT);
+        assertEq(totalVotersMkRoot, enabledVotersMkRoot);
         assertEq(opts.length, 3);
     }
 
@@ -882,7 +823,7 @@ contract BackVoteManagerTest is Test {
         _createVote();
         vm.warp(startDate);
 
-        _castVote("optionB", 222, 556);
+        _castVote("optionB", 222);
 
         (bool hasVoted, string memory optionVoted) = manager.getOwnVoteInfo(VOTE_ID, 222);
         assertTrue(hasVoted);
@@ -905,7 +846,7 @@ contract BackVoteManagerTest is Test {
         _createVote();
         vm.warp(startDate);
 
-        _castVote("optionA", 111, 555);
+        _castVote("optionA", 111);
 
         vm.prank(institutionAdmin);
         manager.disableVote(VOTE_ID);
@@ -918,61 +859,69 @@ contract BackVoteManagerTest is Test {
     // ========== claimVoteReward ==========
 
     function test_claimVoteReward_success() public {
-        manager.setRewardByVote(10e18);
+        manager.setTvdPerVote(10e18);
         _createVote();
-        vm.warp(startDate);
-        _castVote("optionA", 111, 555);
+        vm.warp(endDate + 1);
 
         uint256 claimerBalanceBefore = tvdToken.balanceOf(rewardClaimer);
 
-        vm.expectEmit(true, false, false, true);
-        emit BackVoteManager.Rewarded(VOTE_ID);
+        vm.expectEmit(true, true, false, true);
+        emit VoteManager.Rewarded(VOTE_ID, rewardClaimer);
 
-        vm.prank(rewardClaimer);
-        manager.claimVoteReward(VOTE_ID, 555);
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
 
         assertEq(tvdToken.balanceOf(rewardClaimer), claimerBalanceBefore + 10e18);
     }
 
-    function test_claimVoteReward_revert_rewardsDisabled() public {
+    function test_claimVoteReward_revert_notAuthorizedCaller() public {
+        manager.setTvdPerVote(10e18);
         _createVote();
-        vm.warp(startDate);
-        _castVote("optionA", 111, 555);
+        vm.warp(endDate + 1);
 
-        vm.expectRevert("No rewards enabled");
-        vm.prank(rewardClaimer);
-        manager.claimVoteReward(VOTE_ID, 555);
+        vm.expectRevert("Not authorized caller");
+        vm.prank(unauthorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
     }
 
-    function test_claimVoteReward_revert_notEligible() public {
-        manager.setRewardByVote(10e18);
+    function test_claimVoteReward_revert_voteNotEnded() public {
+        manager.setTvdPerVote(10e18);
         _createVote();
 
-        vm.expectRevert("Can't be rewarded");
-        vm.prank(rewardClaimer);
-        manager.claimVoteReward(VOTE_ID, 555);
+        vm.expectRevert("Vote has not ended yet");
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
     }
 
     function test_claimVoteReward_revert_alreadyRewarded() public {
-        manager.setRewardByVote(10e18);
+        manager.setTvdPerVote(10e18);
         _createVote();
-        vm.warp(startDate);
-        _castVote("optionA", 111, 555);
+        vm.warp(endDate + 1);
 
-        vm.prank(rewardClaimer);
-        manager.claimVoteReward(VOTE_ID, 555);
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
 
         vm.expectRevert("Already rewarded");
-        vm.prank(rewardClaimer);
-        manager.claimVoteReward(VOTE_ID, 555);
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
     }
 
     function test_claimVoteReward_revert_nonExistentVote() public {
-        manager.setRewardByVote(10e18);
+        manager.setTvdPerVote(10e18);
 
         vm.expectRevert("Vote does not exist");
-        vm.prank(rewardClaimer);
-        manager.claimVoteReward(99, 555);
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(99, 555, rewardClaimer);
+    }
+
+    function test_claimVoteReward_revert_insufficientBalance() public {
+        manager.setTvdPerVote(INSTITUTION_TVD_FUNDING + 1);
+        _createVote();
+        vm.warp(endDate + 1);
+
+        vm.expectRevert("Insufficient contract balance");
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
     }
 
     // ========== internal helpers that must run inside vm.startPrank ==========
@@ -987,7 +936,6 @@ contract BackVoteManagerTest is Test {
             resultsDate,
             ENABLED_VOTERS_COUNT,
             enabledVotersMkRoot,
-            registeredVotersMkRoot,
             options
         );
     }

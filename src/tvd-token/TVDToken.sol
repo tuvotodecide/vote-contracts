@@ -26,10 +26,28 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
  * The token is purely deflationary: tokens can be burned but never
  * re-minted (no MINTER_ROLE). Only the DEFAULT_ADMIN_ROLE holder
  * may grant/revoke roles for future governance needs.
+ *
+ * Transfer lockup:
+ * Individual addresses (e.g. team/advisor wallets) can be flagged via
+ * `applyLockup` so that, until `lockupEnd`, they may only send tokens to
+ * addresses holding LOCKUP_BYPASS_ROLE (e.g. a vesting or credits contract).
+ * Addresses not flagged, or transfers made after `lockupEnd`, are unaffected.
+ *  - LOCKUP_MANAGER_ROLE: may flip `applyLockup` for any address.
+ *  - LOCKUP_BYPASS_ROLE:  may receive tokens from a locked address before
+ *                         `lockupEnd`.
  */
 contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
     /// @notice Absolute maximum supply: 21,000,000 TVD (18 decimals).
     uint256 public constant MAX_SUPPLY = 21_000_000 * 10 ** 18;
+    /// @notice Timestamp after which the transfer lockup no longer applies.
+    uint256 public lockupEnd;
+    /// @notice Addresses whose outgoing transfers are restricted until `lockupEnd`.
+    mapping(address => bool) applyLockup;
+
+    /// @notice Role allowed to toggle which addresses are subject to the lockup.
+    bytes32 public constant LOCKUP_MANAGER_ROLE = keccak256("LOCKUP_MANAGER_ROLE");
+    /// @notice Role allowed to receive tokens from locked addresses before lockupEnd.
+    bytes32 public constant LOCKUP_BYPASS_ROLE = keccak256("LOCKUP_BYPASS_ROLE");
 
     // ──────────────────────────────────────────────────────────────────
     // Events
@@ -41,6 +59,8 @@ contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
         address indexed ecosystemWallet,
         address vestingContract
     );
+
+    event ApplyLockupUpdated(address indexed account, bool locked);
 
     // ──────────────────────────────────────────────────────────────────
     // Constructor
@@ -58,6 +78,7 @@ contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
      * @param admin            Address granted DEFAULT_ADMIN_ROLE (governance).
      */
     constructor(
+        uint256 _lockupEnd,
         address liquidityWallet,
         address treasuryWallet,
         address ecosystemWallet,
@@ -77,15 +98,31 @@ contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
         _mint(treasuryWallet, 8_400_000 * 10 ** 18); // 40% — B2B treasury
         _mint(ecosystemWallet, 5_250_000 * 10 ** 18); // 25% — ecosystem
         _mint(vestingContract, 3_150_000 * 10 ** 18); // 15% — team vesting
+        lockupEnd = _lockupEnd;
 
         emit InitialDistribution(liquidityWallet, treasuryWallet, ecosystemWallet, vestingContract);
     }
 
-    // ──────────────────────────────────────────────────────────────────
-    // Required override — ERC20 + ERC20Capped share _update hook
-    // ──────────────────────────────────────────────────────────────────
+    /**
+     * @notice Marks whether `account` is subject to the transfer lockup.
+     * @param account Address to update.
+     * @param locked  True to subject the address to the lockup, false to exempt it.
+     */
+    function setApplyLockup(address account, bool locked) external onlyRole(LOCKUP_MANAGER_ROLE) {
+        applyLockup[account] = locked;
+        emit ApplyLockupUpdated(account, locked);
+    }
 
+    /**
+     * @dev While `from` is flagged in `applyLockup` and `lockupEnd` hasn't
+     *      passed, the transfer is only allowed if `to` holds
+     *      LOCKUP_BYPASS_ROLE. Mints, burns and unflagged senders bypass
+     *      this check entirely.
+     */
     function _update(address from, address to, uint256 value) internal override(ERC20, ERC20Capped) {
+        if (applyLockup[from] && block.timestamp < lockupEnd) {
+            require(hasRole(LOCKUP_BYPASS_ROLE, to), "tokens are still locked");
+        }
         super._update(from, to, value);
     }
 }

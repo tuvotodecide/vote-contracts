@@ -15,32 +15,31 @@ contract TVDIncentiveCampaignsTest is Test {
     address public ecosystem = makeAddr("ecosystem");
     address public vestingAddr = makeAddr("vesting");
     address public operator = makeAddr("operator");
-    address public creditsContract = makeAddr("creditsContract");
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
     address public stranger = makeAddr("stranger");
 
+    uint256 public lockupEnd;
     uint256 public blockStart;
 
     function setUp() public {
-        token = new TVDToken(liquidity, treasury, ecosystem, vestingAddr, admin);
+        lockupEnd = block.timestamp + 1000 days;
+        token = new TVDToken(lockupEnd, liquidity, treasury, ecosystem, vestingAddr, admin);
 
         blockStart = block.timestamp;
-        campaigns = new TVDIncentiveCampaigns(address(token), admin, operator, blockStart);
+        campaigns = new TVDIncentiveCampaigns(address(token), admin, operator);
+
+        vm.startPrank(admin);
+        token.grantRole(token.LOCKUP_MANAGER_ROLE(), address(campaigns));
+        vm.stopPrank();
 
         vm.prank(treasury);
         token.approve(address(campaigns), type(uint256).max);
-
-        vm.prank(admin);
-        campaigns.setCreditsContract(creditsContract);
     }
 
-    function _createCampaign(uint256 amount, uint256 start, uint256 duration, uint256 maxWallets)
-        internal
-        returns (uint256 id)
-    {
+    function _createCampaign(uint256 amount, uint256 start_, uint256 duration_, uint256 maxWallets_) internal {
         vm.prank(admin);
-        id = campaigns.createCampaign(amount, start, duration, maxWallets, treasury);
+        campaigns.createCampaign(amount, start_, duration_, maxWallets_, treasury);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -51,70 +50,27 @@ contract TVDIncentiveCampaignsTest is Test {
         assertEq(address(campaigns.token()), address(token));
     }
 
-    function test_constructor_setsOperator() public view {
-        assertEq(campaigns.operator(), operator);
+    function test_constructor_setsAdminRole() public view {
+        assertTrue(campaigns.hasRole(campaigns.DEFAULT_ADMIN_ROLE(), admin));
     }
 
-    function test_constructor_setsOwner() public view {
-        assertEq(campaigns.owner(), admin);
-    }
-
-    function test_constructor_setsBlockStartTime() public view {
-        assertEq(campaigns.blockStartTime(), blockStart);
-    }
-
-    function test_constructor_defaultBlockDuration() public view {
-        assertEq(campaigns.blockDuration(), 365 days);
+    function test_constructor_setsOperatorRole() public view {
+        assertTrue(campaigns.hasRole(campaigns.OPERATOR_ROLE(), operator));
     }
 
     function test_constructor_revertsZeroToken() public {
         vm.expectRevert("TVDIncentive: invalid token");
-        new TVDIncentiveCampaigns(address(0), admin, operator, blockStart);
+        new TVDIncentiveCampaigns(address(0), admin, operator);
+    }
+
+    function test_constructor_revertsZeroAdmin() public {
+        vm.expectRevert("TVDIncentive: invalid admin");
+        new TVDIncentiveCampaigns(address(token), address(0), operator);
     }
 
     function test_constructor_revertsZeroOperator() public {
         vm.expectRevert("TVDIncentive: invalid operator");
-        new TVDIncentiveCampaigns(address(token), admin, address(0), blockStart);
-    }
-
-    function test_constructor_revertsZeroBlockStartTime() public {
-        vm.expectRevert("TVDIncentive: invalid blockStartTime");
-        new TVDIncentiveCampaigns(address(token), admin, operator, 0);
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // setOperator / setCreditsContract
-    // ──────────────────────────────────────────────────────────────────
-
-    function test_setOperator_success() public {
-        address newOperator = makeAddr("newOperator");
-        vm.prank(admin);
-        campaigns.setOperator(newOperator);
-        assertEq(campaigns.operator(), newOperator);
-    }
-
-    function test_setOperator_revertsNotOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert();
-        campaigns.setOperator(stranger);
-    }
-
-    function test_setOperator_revertsZeroAddress() public {
-        vm.prank(admin);
-        vm.expectRevert("TVDIncentive: invalid operator");
-        campaigns.setOperator(address(0));
-    }
-
-    function test_setCreditsContract_revertsNotOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert();
-        campaigns.setCreditsContract(stranger);
-    }
-
-    function test_setCreditsContract_revertsZeroAddress() public {
-        vm.prank(admin);
-        vm.expectRevert("TVDIncentive: invalid address");
-        campaigns.setCreditsContract(address(0));
+        new TVDIncentiveCampaigns(address(token), admin, address(0));
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -122,25 +78,16 @@ contract TVDIncentiveCampaignsTest is Test {
     // ──────────────────────────────────────────────────────────────────
 
     function test_createCampaign_storesFields() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
 
-        (
-            uint256 incentiveAmountPerWallet,
-            uint256 start,
-            uint256 duration,
-            bool isPaused,
-            uint256 maxWallets,
-            address fundingWallet,
-            uint256 walletsCount
-        ) = campaigns.campaigns(id);
-
-        assertEq(incentiveAmountPerWallet, 100e18);
-        assertEq(start, blockStart);
-        assertEq(duration, 30 days);
-        assertFalse(isPaused);
-        assertEq(maxWallets, 5);
-        assertEq(fundingWallet, treasury);
-        assertEq(walletsCount, 0);
+        assertEq(campaigns.incentiveAmountPerWallet(), 100e18);
+        assertEq(campaigns.start(), blockStart);
+        assertEq(campaigns.duration(), 30 days);
+        assertFalse(campaigns.isPaused());
+        assertEq(campaigns.maxWallets(), 5);
+        assertEq(campaigns.fundingWallet(), treasury);
+        assertEq(campaigns.walletsCount(), 0);
+        assertFalse(campaigns.isCampaignRefunded());
     }
 
     function test_createCampaign_pullsBudgetFromFundingWallet() public {
@@ -151,23 +98,17 @@ contract TVDIncentiveCampaignsTest is Test {
     }
 
     function test_createCampaign_defaultDurationWhenZero() public {
-        uint256 id = _createCampaign(100e18, blockStart, 0, 5);
-        (,, uint256 duration,,,,) = campaigns.campaigns(id);
-        assertEq(duration, campaigns.DEFAULT_DURATION());
+        _createCampaign(100e18, blockStart, 0, 5);
+        assertEq(campaigns.duration(), campaigns.DEFAULT_DURATION());
     }
 
     function test_createCampaign_emitsEvent() public {
-        vm.expectEmit(true, true, false, true);
-        emit TVDIncentiveCampaigns.CampaignCreated(0, 100e18, blockStart, 30 days, 5, treasury);
+        vm.expectEmit(true, false, false, true);
+        emit TVDIncentiveCampaigns.CampaignCreated(100e18, blockStart, 30 days, 5, treasury);
         _createCampaign(100e18, blockStart, 30 days, 5);
     }
 
-    function test_createCampaign_incrementsCampaignCount() public {
-        _createCampaign(100e18, blockStart, 30 days, 5);
-        assertEq(campaigns.campaignCount(), 1);
-    }
-
-    function test_createCampaign_revertsNotOwner() public {
+    function test_createCampaign_revertsNotAdmin() public {
         vm.prank(stranger);
         vm.expectRevert();
         campaigns.createCampaign(100e18, blockStart, 30 days, 5, treasury);
@@ -191,29 +132,70 @@ contract TVDIncentiveCampaignsTest is Test {
         campaigns.createCampaign(100e18, blockStart, 30 days, 5, address(0));
     }
 
-    function test_createCampaign_revertsOverlappingWindow() public {
+    function test_createCampaign_revertsWhileCurrentCampaignActive() public {
         _createCampaign(100e18, blockStart, 30 days, 5);
 
         vm.prank(admin);
-        vm.expectRevert("TVDIncentive: time window overlaps with an existing campaign");
+        vm.expectRevert("TVDIncentive: previous campaign not refunded");
         campaigns.createCampaign(100e18, blockStart + 15 days, 30 days, 5, treasury);
     }
 
-    function test_createCampaign_revertsOverlapEvenWhenExistingPaused() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(admin);
-        campaigns.setPause(id, true);
-
-        vm.prank(admin);
-        vm.expectRevert("TVDIncentive: time window overlaps with an existing campaign");
-        campaigns.createCampaign(100e18, blockStart + 15 days, 30 days, 5, treasury);
-    }
-
-    function test_createCampaign_succeedsNonOverlappingWindow() public {
+    function test_createCampaign_revertsWhileActiveEvenWhenPaused() public {
         _createCampaign(100e18, blockStart, 30 days, 5);
-        uint256 id2 = _createCampaign(100e18, blockStart + 30 days, 30 days, 5);
-        assertEq(id2, 1);
-        assertEq(campaigns.campaignCount(), 2);
+        vm.prank(admin);
+        campaigns.setPause(true);
+
+        vm.prank(admin);
+        vm.expectRevert("TVDIncentive: previous campaign not refunded");
+        campaigns.createCampaign(100e18, blockStart + 15 days, 30 days, 5, treasury);
+    }
+
+    function test_createCampaign_revertsAfterWindowElapsedWithoutRefund() public {
+        // Letting the grant window elapse is no longer enough on its own —
+        // refundCampaign() must be called first.
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.warp(blockStart + 30 days);
+
+        vm.prank(admin);
+        vm.expectRevert("TVDIncentive: previous campaign not refunded");
+        campaigns.createCampaign(50e18, blockStart + 30 days, 30 days, 3, treasury);
+    }
+
+    function test_createCampaign_succeedsAfterRefund() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        _createCampaign(50e18, blockStart + 5 days, 30 days, 3);
+
+        assertEq(campaigns.incentiveAmountPerWallet(), 50e18);
+        assertFalse(campaigns.isCampaignRefunded());
+    }
+
+    function test_createCampaign_succeedsAfterWindowElapsedAndRefund() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.warp(blockStart + 30 days);
+
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        _createCampaign(50e18, blockStart + 30 days, 30 days, 3);
+
+        assertEq(campaigns.incentiveAmountPerWallet(), 50e18);
+        assertEq(campaigns.maxWallets(), 3);
+    }
+
+    function test_createCampaign_resetsWalletsCount() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(operator);
+        campaigns.giveIncentive(alice);
+
+        vm.warp(blockStart + 30 days);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+        _createCampaign(50e18, blockStart + 30 days, 30 days, 3);
+
+        assertEq(campaigns.walletsCount(), 0);
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -221,406 +203,311 @@ contract TVDIncentiveCampaignsTest is Test {
     // ──────────────────────────────────────────────────────────────────
 
     function test_setPause_success() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.prank(admin);
-        campaigns.setPause(id, true);
-        (,,, bool isPaused,,,) = campaigns.campaigns(id);
-        assertTrue(isPaused);
+        campaigns.setPause(true);
+        assertTrue(campaigns.isPaused());
     }
 
     function test_setPause_emitsEvent() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.expectEmit(true, false, false, true);
-        emit TVDIncentiveCampaigns.CampaignPauseSet(id, true);
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.expectEmit(false, false, false, true);
+        emit TVDIncentiveCampaigns.CampaignPauseSet(true);
         vm.prank(admin);
-        campaigns.setPause(id, true);
+        campaigns.setPause(true);
     }
 
-    function test_setPause_revertsNotOwner() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+    function test_setPause_revertsNotAdmin() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.prank(stranger);
         vm.expectRevert();
-        campaigns.setPause(id, true);
+        campaigns.setPause(true);
     }
 
-    function test_setPause_revertsNonexistentCampaign() public {
+    function test_setPause_revertsNoActiveCampaign() public {
         vm.prank(admin);
-        vm.expectRevert("TVDIncentive: campaign does not exist");
-        campaigns.setPause(0, true);
+        vm.expectRevert("TVDIncentive: no active campaign");
+        campaigns.setPause(true);
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // giveIncentive — within block period (assignment, no transfer)
+    // refundCampaign
     // ──────────────────────────────────────────────────────────────────
 
-    function test_giveIncentive_assignsDuringBlockPeriod() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+    function test_refundCampaign_setsRefundedFlag() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+        assertTrue(campaigns.isCampaignRefunded());
+    }
+
+    function test_refundCampaign_refundsFullBudgetWhenUnused() public {
+        uint256 balBeforeCreate = token.balanceOf(treasury);
+        _createCampaign(100e18, blockStart, 30 days, 5);
+
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        assertEq(token.balanceOf(treasury), balBeforeCreate);
+        assertEq(token.balanceOf(address(campaigns)), 0);
+    }
+
+    function test_refundCampaign_refundsOnlyRemainingBudget() public {
+        uint256 balBeforeCreate = token.balanceOf(treasury);
+        _createCampaign(100e18, blockStart, 30 days, 5);
 
         vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice); // 100e18 leaves the contract permanently
 
-        assertEq(campaigns.campaignBalance(id, alice), 100e18);
-        assertEq(token.balanceOf(alice), 0);
-        assertTrue(campaigns.hasReceived(id, alice));
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        assertEq(token.balanceOf(treasury), balBeforeCreate - 100e18);
+        assertEq(token.balanceOf(address(campaigns)), 0);
+    }
+
+    function test_refundCampaign_succeedsAfterGrantWindowElapsed() public {
+        // The whole point of refundCampaign(): unused tokens can be swept
+        // back even once the grant window has already passed.
+        uint256 balBeforeCreate = token.balanceOf(treasury);
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.warp(blockStart + 30 days + 1);
+
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        assertEq(token.balanceOf(treasury), balBeforeCreate);
+        assertEq(token.balanceOf(address(campaigns)), 0);
+    }
+
+    function test_refundCampaign_emitsEvent() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+
+        vm.expectEmit(true, false, false, true);
+        emit TVDIncentiveCampaigns.CampaignRefunded(treasury, 500e18);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+    }
+
+    function test_refundCampaign_revertsNotAdmin() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(stranger);
+        vm.expectRevert();
+        campaigns.refundCampaign();
+    }
+
+    function test_refundCampaign_revertsNoActiveCampaign() public {
+        vm.prank(admin);
+        vm.expectRevert("TVDIncentive: no active campaign");
+        campaigns.refundCampaign();
+    }
+
+    function test_refundCampaign_revertsAlreadyRefunded() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        vm.prank(admin);
+        vm.expectRevert("TVDIncentive: campaign already refunded");
+        campaigns.refundCampaign();
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // giveIncentive
+    // ──────────────────────────────────────────────────────────────────
+
+    function test_giveIncentive_transfersTokensToRecipient() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+
+        vm.prank(operator);
+        campaigns.giveIncentive(alice);
+
+        assertEq(token.balanceOf(alice), 100e18);
+        assertTrue(campaigns.hasReceived(alice));
+    }
+
+    function test_giveIncentive_locksRecipientInToken() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+
+        vm.prank(operator);
+        campaigns.giveIncentive(alice);
+
+        vm.prank(alice);
+        vm.expectRevert("tokens are still locked");
+        token.transfer(stranger, 100e18);
+    }
+
+    function test_giveIncentive_lockedRecipientCanTransferToBypassAddress() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+
+        vm.prank(operator);
+        campaigns.giveIncentive(alice);
+
+        bytes32 lockupBypassRole = token.LOCKUP_BYPASS_ROLE();
+        vm.prank(admin);
+        token.grantRole(lockupBypassRole, stranger);
+
+        vm.prank(alice);
+        bool success = token.transfer(stranger, 100e18);
+
+        assertTrue(success);
+        assertEq(token.balanceOf(stranger), 100e18);
     }
 
     function test_giveIncentive_incrementsWalletsCount() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
 
         vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
 
-        (,,,,,, uint256 walletsCount) = campaigns.campaigns(id);
-        assertEq(walletsCount, 1);
+        assertEq(campaigns.walletsCount(), 1);
     }
 
-    function test_giveIncentive_emitsAssignedEvent() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+    function test_giveIncentive_emitsEvent() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
 
-        vm.expectEmit(true, true, false, true);
-        emit TVDIncentiveCampaigns.IncentiveAssigned(id, alice, 100e18);
+        vm.expectEmit(true, false, false, true);
+        emit TVDIncentiveCampaigns.IncentiveTransferred(alice, 100e18);
         vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-    }
-
-    function test_giveIncentive_transfersImmediatelyAfterBlockPeriod() public {
-        // A campaign window that opens after the global block period ends.
-        uint256 id = _createCampaign(100e18, blockStart + 400 days, 30 days, 5);
-        vm.warp(blockStart + 400 days + 1);
-
-        vm.prank(operator);
-        campaigns.giveIncentive(id, bob);
-
-        assertEq(token.balanceOf(bob), 100e18);
-        assertEq(campaigns.campaignBalance(id, bob), 0);
-    }
-
-    function test_giveIncentive_emitsTransferredEventAfterBlockPeriod() public {
-        uint256 id = _createCampaign(100e18, blockStart + 400 days, 30 days, 5);
-        vm.warp(blockStart + 400 days + 1);
-
-        vm.expectEmit(true, true, false, true);
-        emit TVDIncentiveCampaigns.IncentiveTransferred(id, bob, 100e18);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, bob);
+        campaigns.giveIncentive(alice);
     }
 
     function test_giveIncentive_revertsNotOperator() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.prank(stranger);
-        vm.expectRevert("TVDIncentive: caller is not operator");
-        campaigns.giveIncentive(id, alice);
+        vm.expectRevert();
+        campaigns.giveIncentive(alice);
     }
 
     function test_giveIncentive_revertsZeroRecipient() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.prank(operator);
         vm.expectRevert("TVDIncentive: invalid recipient");
-        campaigns.giveIncentive(id, address(0));
+        campaigns.giveIncentive(address(0));
     }
 
     function test_giveIncentive_revertsPausedCampaign() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.prank(admin);
-        campaigns.setPause(id, true);
+        campaigns.setPause(true);
 
         vm.prank(operator);
         vm.expectRevert("TVDIncentive: campaign is paused");
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
+    }
+
+    function test_giveIncentive_revertsRefundedCampaign() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+
+        vm.prank(operator);
+        vm.expectRevert("TVDIncentive: campaign has been refunded");
+        campaigns.giveIncentive(alice);
     }
 
     function test_giveIncentive_revertsBeforeWindowStarts() public {
-        uint256 id = _createCampaign(100e18, blockStart + 10 days, 30 days, 5);
+        _createCampaign(100e18, blockStart + 10 days, 30 days, 5);
 
         vm.prank(operator);
         vm.expectRevert("TVDIncentive: campaign grant window is not active");
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
     }
 
     function test_giveIncentive_revertsAfterWindowEnds() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.warp(blockStart + 30 days);
 
         vm.prank(operator);
         vm.expectRevert("TVDIncentive: campaign grant window is not active");
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
     }
 
     function test_giveIncentive_revertsAlreadyReceived() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
 
         vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
 
         vm.prank(operator);
         vm.expectRevert("TVDIncentive: already received");
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
+    }
+
+    function test_giveIncentive_revertsAlreadyReceivedAcrossCampaigns() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(operator);
+        campaigns.giveIncentive(alice);
+
+        vm.warp(blockStart + 30 days);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+        _createCampaign(50e18, blockStart + 30 days, 30 days, 5);
+
+        // Alice already received an incentive in the previous campaign — a
+        // wallet may only ever be granted the incentive once.
+        vm.prank(operator);
+        vm.expectRevert("TVDIncentive: already received");
+        campaigns.giveIncentive(alice);
     }
 
     function test_giveIncentive_revertsMaxWalletsReached() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 1);
+        _createCampaign(100e18, blockStart, 30 days, 1);
 
         vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
+        campaigns.giveIncentive(alice);
 
         vm.prank(operator);
         vm.expectRevert("TVDIncentive: max wallets reached");
-        campaigns.giveIncentive(id, bob);
+        campaigns.giveIncentive(bob);
     }
 
-    function test_giveIncentive_unlimitedWhenMaxWalletsZero() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 0);
-
-        vm.startPrank(operator);
-        campaigns.giveIncentive(id, alice);
-        campaigns.giveIncentive(id, bob);
-        vm.stopPrank();
-
-        assertEq(campaigns.campaignBalance(id, alice), 100e18);
-        assertEq(campaigns.campaignBalance(id, bob), 100e18);
+    function test_createCampaign_revertsZeroMaxWallets() public {
+        vm.prank(admin);
+        vm.expectRevert("TVDIncentive: max wallets must be > 0");
+        campaigns.createCampaign(100e18, blockStart, 30 days, 0, treasury);
     }
 
-    function test_giveIncentive_revertsNonexistentCampaign() public {
+    function test_giveIncentive_revertsNoActiveCampaign() public {
         vm.prank(operator);
-        vm.expectRevert("TVDIncentive: campaign does not exist");
-        campaigns.giveIncentive(0, alice);
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // release
-    // ──────────────────────────────────────────────────────────────────
-
-    function test_release_revertsWhileBlocked() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.prank(alice);
-        vm.expectRevert("TVDIncentive: tokens are still locked");
-        campaigns.release(id);
-    }
-
-    function test_release_revertsNothingToClaim() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.warp(blockStart + 365 days);
-
-        vm.prank(alice);
-        vm.expectRevert("TVDIncentive: nothing to claim");
-        campaigns.release(id);
-    }
-
-    function test_release_success() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.warp(blockStart + 365 days);
-
-        vm.prank(alice);
-        campaigns.release(id);
-
-        assertEq(token.balanceOf(alice), 100e18);
-        assertEq(campaigns.campaignBalance(id, alice), 0);
-    }
-
-    function test_release_emitsEvent() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.warp(blockStart + 365 days);
-
-        vm.expectEmit(true, true, false, true);
-        emit TVDIncentiveCampaigns.IncentiveClaimed(id, alice, 100e18);
-        vm.prank(alice);
-        campaigns.release(id);
-    }
-
-    function test_release_doesNotClearOtherCampaignBalance() public {
-        uint256 id1 = _createCampaign(100e18, blockStart, 30 days, 5);
-        uint256 id2 = _createCampaign(50e18, blockStart + 40 days, 30 days, 5);
-
-        vm.prank(operator);
-        campaigns.giveIncentive(id1, alice);
-
-        vm.warp(blockStart + 40 days);
-        vm.prank(operator);
-        campaigns.giveIncentive(id2, alice);
-
-        vm.warp(blockStart + 365 days + 1);
-
-        vm.prank(alice);
-        campaigns.release(id1);
-
-        assertEq(token.balanceOf(alice), 100e18);
-        assertEq(campaigns.campaignBalance(id1, alice), 0);
-        assertEq(campaigns.campaignBalance(id2, alice), 50e18);
-    }
-
-    function test_release_includesRefundedHolding() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        // Simulate a liquidation refund routed back through TVDElectoralCredits.
-        vm.prank(treasury);
-        token.transfer(address(campaigns), 25e18);
-        vm.prank(creditsContract);
-        campaigns.creditRefund(alice, 25e18);
-
-        vm.warp(blockStart + 365 days + 1);
-        vm.prank(alice);
-        campaigns.release(id);
-
-        assertEq(token.balanceOf(alice), 125e18);
-    }
-
-    function test_release_revertsNonexistentCampaign() public {
-        vm.warp(blockStart + 365 days);
-        vm.prank(alice);
-        vm.expectRevert("TVDIncentive: campaign does not exist");
-        campaigns.release(0);
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // IVestingProvider — assignedBalance / withdrawFor / creditRefund
-    // ──────────────────────────────────────────────────────────────────
-
-    function test_assignedBalance_sumsAcrossCampaigns() public {
-        uint256 id1 = _createCampaign(100e18, blockStart, 30 days, 5);
-        uint256 id2 = _createCampaign(50e18, blockStart + 40 days, 30 days, 5);
-
-        vm.prank(operator);
-        campaigns.giveIncentive(id1, alice);
-
-        vm.warp(blockStart + 40 days);
-        vm.prank(operator);
-        campaigns.giveIncentive(id2, alice);
-
-        assertEq(campaigns.assignedBalance(alice), 150e18);
-    }
-
-    function test_withdrawFor_pullsAcrossMultipleCampaigns() public {
-        uint256 id1 = _createCampaign(100e18, blockStart, 30 days, 5);
-        uint256 id2 = _createCampaign(50e18, blockStart + 40 days, 30 days, 5);
-
-        vm.prank(operator);
-        campaigns.giveIncentive(id1, alice);
-
-        vm.warp(blockStart + 40 days);
-        vm.prank(operator);
-        campaigns.giveIncentive(id2, alice);
-
-        vm.prank(creditsContract);
-        campaigns.withdrawFor(alice, 120e18);
-
-        assertEq(token.balanceOf(creditsContract), 120e18);
-        // Withdrawn from the last campaign backwards: id2's 50 fully drained,
-        // then 70 taken from id1's 100, leaving 30.
-        assertEq(campaigns.campaignBalance(id2, alice), 0);
-        assertEq(campaigns.campaignBalance(id1, alice), 30e18);
-    }
-
-    function test_withdrawFor_emitsEvent() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.expectEmit(true, false, false, true);
-        emit TVDIncentiveCampaigns.InstitutionTokensWithdrawn(alice, 100e18);
-        vm.prank(creditsContract);
-        campaigns.withdrawFor(alice, 100e18);
-    }
-
-    function test_withdrawFor_revertsNotCreditsContract() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.prank(stranger);
-        vm.expectRevert("TVDIncentive: caller is not credits contract");
-        campaigns.withdrawFor(alice, 100e18);
-    }
-
-    function test_withdrawFor_revertsInsufficientAssignedBalance() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.prank(creditsContract);
-        vm.expectRevert("TVDIncentive: insufficient assigned balance");
-        campaigns.withdrawFor(alice, 200e18);
-    }
-
-    function test_creditRefund_success() public {
-        vm.prank(treasury);
-        token.transfer(address(campaigns), 50e18);
-
-        vm.prank(creditsContract);
-        campaigns.creditRefund(alice, 50e18);
-
-        assertEq(campaigns.refundedHolding(alice), 50e18);
-    }
-
-    function test_creditRefund_emitsEvent() public {
-        vm.expectEmit(true, false, false, true);
-        emit TVDIncentiveCampaigns.InstitutionTokensRefunded(alice, 50e18);
-        vm.prank(creditsContract);
-        campaigns.creditRefund(alice, 50e18);
-    }
-
-    function test_creditRefund_revertsNotCreditsContract() public {
-        vm.prank(stranger);
-        vm.expectRevert("TVDIncentive: caller is not credits contract");
-        campaigns.creditRefund(alice, 50e18);
-    }
-
-    function test_creditRefund_revertsZeroInstitution() public {
-        vm.prank(creditsContract);
-        vm.expectRevert("TVDIncentive: invalid institution");
-        campaigns.creditRefund(address(0), 50e18);
+        vm.expectRevert("TVDIncentive: no active campaign");
+        campaigns.giveIncentive(alice);
     }
 
     // ──────────────────────────────────────────────────────────────────
     // Views
     // ──────────────────────────────────────────────────────────────────
 
-    function test_unlockTime() public view {
-        assertEq(campaigns.unlockTime(), blockStart + 365 days);
-    }
-
     function test_campaignEndTime() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        assertEq(campaigns.campaignEndTime(id), blockStart + 30 days);
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        assertEq(campaigns.campaignEndTime(), blockStart + 30 days);
     }
 
-    function test_campaignEndTime_revertsNonexistent() public {
-        vm.expectRevert("TVDIncentive: campaign does not exist");
-        campaigns.campaignEndTime(0);
+    function test_campaignEndTime_revertsNoActiveCampaign() public {
+        vm.expectRevert("TVDIncentive: no active campaign");
+        campaigns.campaignEndTime();
     }
 
     function test_isActive_trueDuringWindow() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        assertTrue(campaigns.isActive(id));
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        assertTrue(campaigns.isActive());
     }
 
     function test_isActive_falseBeforeWindow() public {
-        uint256 id = _createCampaign(100e18, blockStart + 10 days, 30 days, 5);
-        assertFalse(campaigns.isActive(id));
+        _createCampaign(100e18, blockStart + 10 days, 30 days, 5);
+        assertFalse(campaigns.isActive());
     }
 
     function test_isActive_falseAfterWindow() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
+        _createCampaign(100e18, blockStart, 30 days, 5);
         vm.warp(blockStart + 30 days);
-        assertFalse(campaigns.isActive(id));
+        assertFalse(campaigns.isActive());
     }
 
-    function test_getAmountReceived_returnsCallerBalance() public {
-        uint256 id = _createCampaign(100e18, blockStart, 30 days, 5);
-        vm.prank(operator);
-        campaigns.giveIncentive(id, alice);
-
-        vm.prank(alice);
-        assertEq(campaigns.getAmountReceived(id), 100e18);
+    function test_isActive_falseWhenRefunded() public {
+        _createCampaign(100e18, blockStart, 30 days, 5);
+        vm.prank(admin);
+        campaigns.refundCampaign();
+        assertFalse(campaigns.isActive());
     }
 }

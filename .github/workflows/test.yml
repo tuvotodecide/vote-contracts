@@ -42,3 +42,6 @@ jobs:
 
       - name: Run Tests - Election Vote Module
         run: forge test -vvv --match-path "test/BackVoteManager.t.sol"
+
+      - name: Run Tests - E2E complete test
+        run: forge test -vvv --match-path "test/E2EEcosystemTest.t.sol"

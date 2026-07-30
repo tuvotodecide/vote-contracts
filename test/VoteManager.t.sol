@@ -924,6 +924,40 @@ contract VoteManagerTest is Test {
         manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
     }
 
+    // ========== hasReceivedReward ==========
+
+    function test_hasReceivedReward_falseBeforeClaim() public {
+        _createVote();
+
+        assertFalse(manager.hasReceivedReward(VOTE_ID, 555));
+    }
+
+    function test_hasReceivedReward_trueAfterClaim() public {
+        manager.setTvdPerVote(10e18);
+        _createVote();
+        vm.warp(endDate + 1);
+
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
+
+        assertTrue(manager.hasReceivedReward(VOTE_ID, 555));
+    }
+
+    function test_hasReceivedReward_falseForDifferentRewardHash() public {
+        manager.setTvdPerVote(10e18);
+        _createVote();
+        vm.warp(endDate + 1);
+
+        vm.prank(authorizedCaller);
+        manager.claimVoteReward(VOTE_ID, 555, rewardClaimer);
+
+        assertFalse(manager.hasReceivedReward(VOTE_ID, 666));
+    }
+
+    function test_hasReceivedReward_falseForNonExistentVote() public view {
+        assertFalse(manager.hasReceivedReward(99, 555));
+    }
+
     // ========== internal helpers that must run inside vm.startPrank ==========
 
     function _createVoteAsPrankedAdmin() internal {

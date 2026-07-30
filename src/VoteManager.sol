@@ -517,4 +517,12 @@ contract VoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgradea
         hasVoted = true;
         optionVoted = vote.nullifiers[nullifier];
     }
+
+    /// @notice Checks whether a reward has already been claimed for a vote.
+    /// @param voteId Id of the vote to query.
+    /// @param rewardHash Hash identifying the reward claim, as passed to `claimVoteReward`.
+    /// @return hasReceivedReward True if `rewardHash` has already been claimed for `voteId`.
+    function hasReceivedReward(uint256 voteId, uint256 rewardHash) external view returns (bool hasReceivedReward) {
+        return votes[voteId].alreadyRewarded[rewardHash];
+    }
 }

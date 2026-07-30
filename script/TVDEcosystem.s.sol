@@ -6,7 +6,6 @@ import {TVDToken} from "../src/tvd-token/TVDToken.sol";
 import {TVDVesting} from "../src/tvd-token/TVDVesting.sol";
 import {TVDInstitutionalVesting} from "../src/tvd-token/TVDInstitutionalVesting.sol";
 import {TVDElectoralCredits} from "../src/tvd-token/TVDElectoralCredits.sol";
-import {TVDMultisig} from "../src/tvd-token/TVDMultisig.sol";
 import {TVDIncentiveCampaigns} from "../src/tvd-token/TVDIncentiveCampaigns.sol";
 
 contract TVDEcosystemScript is Script {

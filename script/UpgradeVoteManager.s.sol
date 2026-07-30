@@ -9,7 +9,7 @@ contract UpgradeVoteManagerScript is Script {
     function run() public {
         address proxy = vm.envAddress("BACK_VOTE_PROXY");
         Options memory opts;
-        opts.referenceContract = "VoteManagerV2.sol:VoteManager";
+        opts.referenceContract = "VoteManagerOld.sol:VoteManager";
 
         vm.startBroadcast();
 

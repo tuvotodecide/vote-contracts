@@ -70,6 +70,7 @@ contract TVDEcosystemScript is Script {
         uint256 tvdPerCredit = vm.envUint("TVD_PER_CREDIT");
         address platformWallet = vm.envAddress("PLATFORM_WALLET");
         uint256 maxTokenPerElection = vm.envOr("MAX_TOKEN_PER_ELECTION", uint256(100_000e18));
+        address operator = vm.envAddress("OPERATOR_WALLET");
 
         vm.startBroadcast();
         TVDElectoralCredits credits = new TVDElectoralCredits(tokenAddr, adminAddr, tvdPerCredit, platformWallet);
@@ -82,6 +83,7 @@ contract TVDEcosystemScript is Script {
         if (maxTokenPerElection != credits.maxTokenPerElection()) {
             credits.setMaxTokenPerElection(maxTokenPerElection);
         }
+        credits.grantRole(credits.OPERATOR_ROLE(), operator);
         vm.stopBroadcast();
 
         console.log("TVDElectoralCredits contract deployed at:", creditsAddr, "With sender", msg.sender);

@@ -27,5 +27,6 @@ contract VoteManagerScript is Script {
         vm.stopBroadcast();
 
         console.log("Contract deployed at:", voteProxy, "With sender:", msg.sender);
+        console.log("Assign this contract as operator in ElectoralCredits is required");
     }
 }

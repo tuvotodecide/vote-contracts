@@ -64,8 +64,8 @@ contract TVDElectoralCredits is AccessControl, ReentrancyGuard {
     /// @notice TVDToken contract.
     IBurnableERC20 public immutable token;
 
-    /// @notice Wallet that receives TVD at liquidation.
-    address public immutable platformWallet;
+    /// @notice Wallet that receives TVD at liquidation. Adjustable by admin.
+    address public platformWallet;
 
     /// @notice TVD (in wei) locked per electoral credit at top-up time.
     ///         Adjustable by admin; only affects future purchases.
@@ -121,6 +121,7 @@ contract TVDElectoralCredits is AccessControl, ReentrancyGuard {
     event TvdPerCreditUpdated(uint256 oldRate, uint256 newRate);
     event BurnBpsUpdated(uint16 oldBurnBps, uint16 newBurnBps);
     event MaxTokenPerElectionUpdated(uint256 oldMax, uint256 newMax);
+    event PlatformWalletUpdated(address indexed oldWallet, address indexed newWallet);
     event DustRecovered(uint256 amount);
     event VestingProviderAdded(address indexed provider);
     event VestingProviderRemoved(address indexed provider);
@@ -328,6 +329,16 @@ contract TVDElectoralCredits is AccessControl, ReentrancyGuard {
     function setMaxTokenPerElection(uint256 newMax) external onlyRole(DEFAULT_ADMIN_ROLE) {
         emit MaxTokenPerElectionUpdated(maxTokenPerElection, newMax);
         maxTokenPerElection = newMax;
+    }
+
+    /**
+     * @notice Update the wallet that receives TVD at liquidation.
+     * @param newPlatformWallet New platform wallet address.
+     */
+    function setPlatformWallet(address newPlatformWallet) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newPlatformWallet != address(0), "TVDCredits: invalid platform wallet");
+        emit PlatformWalletUpdated(platformWallet, newPlatformWallet);
+        platformWallet = newPlatformWallet;
     }
 
     // ──────────────────────────────────────────────────────────────────

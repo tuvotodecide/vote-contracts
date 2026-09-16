@@ -62,6 +62,8 @@ contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
 
     event ApplyLockupUpdated(address indexed account, bool locked);
 
+    event LockupEndUpdated(uint256 previousLockupEnd, uint256 newLockupEnd);
+
     // ──────────────────────────────────────────────────────────────────
     // Constructor
     // ──────────────────────────────────────────────────────────────────
@@ -111,6 +113,15 @@ contract TVDToken is ERC20, ERC20Burnable, ERC20Capped, AccessControl {
     function setApplyLockup(address account, bool locked) external onlyRole(LOCKUP_MANAGER_ROLE) {
         applyLockup[account] = locked;
         emit ApplyLockupUpdated(account, locked);
+    }
+
+    /**
+     * @notice Updates the timestamp after which the transfer lockup no longer applies.
+     * @param newLockupEnd New lockup-end timestamp.
+     */
+    function setLockupEnd(uint256 newLockupEnd) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        emit LockupEndUpdated(lockupEnd, newLockupEnd);
+        lockupEnd = newLockupEnd;
     }
 
     /**

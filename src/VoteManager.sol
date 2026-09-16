@@ -244,6 +244,7 @@ contract VoteManager is Initializable, ReentrancyGuardTransient, OwnableUpgradea
 
         institutions[id].id = id;
         institutions[id].admin = admin;
+        institutions[id].authorizedAddresses[admin] = true;
 
         emit InstitutionCreated(id, admin);
     }
